@@ -18,14 +18,15 @@
 #   ./docker-faceswap.sh convert            # apply trained MODEL_DIR -> swapped output
 #   ./docker-faceswap.sh shell              # drop into a bash shell in the container
 #
-# Extract flow: each run writes a fresh workspace/review/<timestamp>/ of deduped
-# faces. You review it, delete bad faces, then MOVE the keepers into the folder
-# convert/train needs. Runs never overwrite each other.
+# Workspace (WS): all artifacts for one identity live under workspace/<WS>/. WS
+# defaults to the input's basename; set it explicitly to train multiple faces.
+# Each extract run writes workspace/<WS>/review/<timestamp>/ of deduped faces.
+# You review it, delete bad faces, then MOVE keepers into workspace/<WS>/faces/.
 #
 # Override config via env vars, e.g.:
-#   INPUT=my1.mp4 ./docker-faceswap.sh extract
-#   INPUT=my1.mp4 DEDUP_THRESHOLD=4 REF_DIR=workspace/ref_A ./docker-faceswap.sh extract
-#   INPUT=src.mp4 OUTPUT=workspace/out MODEL_DIR=workspace/model ./docker-faceswap.sh convert
+#   INPUT=my1.mp4 ./docker-faceswap.sh extract                 # WS=my1
+#   WS=alice INPUT=alice.mp4 ./docker-faceswap.sh extract       # workspace/alice/
+#   WS=alice INPUT=alice.mp4 ./docker-faceswap.sh convert
 #
 set -euo pipefail
 
@@ -37,10 +38,20 @@ PLATFORM="${PLATFORM:-linux/amd64}"           # native on Intel Macs; emulated o
 # Source media to extract/convert: a folder of frames OR a single video file.
 INPUT="${INPUT:-my1.mp4}"
 
-# --- extract ---
-FACES_OUT="${FACES_OUT:-workspace/faces_my1}" # where extracted faces are written
+# --- workspace (one named space per identity, so training many faces never collides) ---
+# WS = workspace name. Defaults to the input's basename (my1.mp4 -> "my1").
+# ALL artifacts for this identity live under workspace/<WS>/ (ref, review, faces,
+# model, converted). Set WS explicitly when training multiple faces, e.g. WS=alice.
+WS="${WS:-}"
+if [ -z "$WS" ]; then b="$(basename "$INPUT")"; WS="${b%.*}"; fi
+WS_DIR="workspace/$WS"
+
+# --- identity filter (multi-face media): curated single-identity folder ---
+REF_DIR="${REF_DIR:-$WS_DIR/ref}"             # populate with images of the ONE person to keep/swap
+REF_THRESHOLD="${REF_THRESHOLD:-0.60}"        # higher = stricter match
 
 # --- dedupe (thin near-identical faces from slow-motion / consecutive frames) ---
+FACES_OUT="${FACES_OUT:-$WS_DIR/faces}"        # standalone `dedupe` input folder
 DEDUP_OUT="${DEDUP_OUT:-}"                     # standalone `dedupe` output (default: <FACES_OUT>_dedup)
 DEDUP_THRESHOLD="${DEDUP_THRESHOLD:-6}"        # Hamming distance on 64-bit dHash.
                                               #   lower = stricter (drops more); 0 = no dedupe (keep all).
@@ -50,23 +61,19 @@ DEDUP_THRESHOLD="${DEDUP_THRESHOLD:-6}"        # Hamming distance on 64-bit dHas
 # Each `extract` run writes a fresh timestamped folder under REVIEW_DIR. You curate
 # it (delete bad faces) then MOVE the approved faces into the folder convert/train
 # needs. Nothing is overwritten between runs.
-REVIEW_DIR="${REVIEW_DIR:-workspace/review}"  # parent folder for timestamped review runs
+REVIEW_DIR="${REVIEW_DIR:-$WS_DIR/review}"     # parent folder for timestamped review runs
 KEEP_RAW="${KEEP_RAW:-0}"                      # 1 = also keep the pre-dedupe raw faces (in <run>_raw)
 DEDUP="${DEDUP:-true}"                          # extract dedupes by default; disable with `dedupe=false`
 
 # --- convert ---
-OUTPUT="${OUTPUT:-workspace/converted}"       # final swapped frames/video
-MODEL_DIR="${MODEL_DIR:-workspace/model}"     # trained model dir (pull from cloud first)
+OUTPUT="${OUTPUT:-$WS_DIR/converted}"         # final swapped frames/video
+MODEL_DIR="${MODEL_DIR:-$WS_DIR/model}"       # trained model dir (pull from cloud first)
 ALIGNMENTS="${ALIGNMENTS:-}"                  # empty = let faceswap auto-detect
 ALIGNED_DIR="${ALIGNED_DIR:-}"               # optional pre-extracted aligned faces dir
 WRITER="${WRITER:-ffmpeg}"                    # ffmpeg (video) | opencv | pillow
 COLOR_ADJ="${COLOR_ADJ:-avg-color}"           # avg-color | color-transfer | match-hist | none
 MASK_TYPE="${MASK_TYPE:-extended}"            # extended | components | none | <trained>
 OUTPUT_SCALE="${OUTPUT_SCALE:-100}"           # output size percent
-
-# --- identity filter (multi-face media): curated single-identity folder ---
-REF_DIR="${REF_DIR:-workspace/ref_identity}"  # set & populate to keep/swap ONE person only
-REF_THRESHOLD="${REF_THRESHOLD:-0.60}"        # higher = stricter match
 # ===============================================================
 
 log() { printf '\033[1;34m[docker-fs]\033[0m %s\n' "$*"; }
@@ -168,6 +175,7 @@ PY
 cmd_extract() {
   ensure_image
   [ -e "$FS_DIR/$INPUT" ] || { err "INPUT not found: $INPUT (relative to $FS_DIR)"; exit 1; }
+  log "Workspace: '$WS' -> $WS_DIR/  (ref=$REF_DIR review=$REVIEW_DIR)"
 
   # Inline toggle: `extract dedupe=false` disables dedupe for this run.
   local arg
@@ -202,8 +210,8 @@ cmd_extract() {
 
   local n; n="$(ls "$FS_DIR/$run" 2>/dev/null | wc -l | tr -d ' ')"
   log "Review folder ready -> $run ($n faces)"
-  log "NEXT: review $run, delete bad faces, then MOVE the keepers into the folder"
-  log "      your convert/train step uses (e.g. ALIGNED_DIR or faces_A)."
+  log "NEXT: review $run, delete bad faces, then MOVE the keepers into:"
+  log "      $WS_DIR/faces/   (upload that as faces_A/B for training, or use as ALIGNED_DIR)"
 }
 
 cmd_convert() {
@@ -263,18 +271,26 @@ Usage: $0 {build|extract|dedupe|convert|shell}
 Why Docker: Intel Macs have NO torchvision>=0.18 wheel, so faceswap can't run
 natively. This runs the linux/amd64 CPU build instead. (Train -> use setup-vast.sh.)
 
-Extract flow: each run writes workspace/review/<timestamp>/ (deduped). Review it,
-delete bad faces, then move the approved faces into your target folder. Tune with
+Workspace (WS): all artifacts for one identity live under workspace/<WS>/ (ref,
+review, faces, model, converted). WS defaults to the input's basename. Set WS
+explicitly to train multiple faces without collision:
+  workspace/<WS>/ref/      <- your reference images (single identity)
+  workspace/<WS>/review/   <- timestamped extract+dedupe runs (curate these)
+  workspace/<WS>/faces/    <- move approved faces here (train data / ALIGNED_DIR)
+  workspace/<WS>/model/    <- trained model (pull from cloud)
+  workspace/<WS>/converted/<- convert output
+
+Extract flow: each run writes workspace/<WS>/review/<timestamp>/ (deduped). Review
+it, delete bad faces, then move the keepers into workspace/<WS>/faces/. Tune with
 DEDUP_THRESHOLD (0 = no dedupe), KEEP_RAW=1 to also keep pre-dedupe faces.
 
 Examples:
-  INPUT=my1.mp4 $0 extract                       # -> workspace/review/<timestamp>/ (deduped)
-  INPUT=my1.mp4 $0 extract dedupe=false          # skip dedupe (keep all faces)
-  INPUT=my1.mp4 DEDUP_THRESHOLD=4 $0 extract     # keep more (lighter dedupe)
-  INPUT=my1.mp4 REF_DIR=workspace/ref_A $0 extract   # single-identity only
-  REVIEW_DIR=workspace/review_B INPUT=b.mp4 $0 extract
-  FACES_OUT=workspace/faces_my1 DEDUP_THRESHOLD=6 $0 dedupe   # re-thin a folder
-  INPUT=src.mp4 OUTPUT=workspace/out MODEL_DIR=workspace/model $0 convert
+  INPUT=my1.mp4 $0 extract                  # WS=my1 -> workspace/my1/review/<ts>/
+  WS=alice INPUT=alice.mp4 $0 extract       # all under workspace/alice/
+  WS=bob   INPUT=bob.mov   $0 extract       # separate identity, no collision
+  INPUT=my1.mp4 $0 extract dedupe=false     # skip dedupe (keep all faces)
+  WS=alice DEDUP_THRESHOLD=4 INPUT=alice.mp4 $0 extract   # lighter dedupe
+  WS=alice INPUT=alice.mp4 $0 convert       # uses workspace/alice/model + /converted
 EOF
     exit 1 ;;
 esac
