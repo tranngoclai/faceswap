@@ -34,6 +34,12 @@ INPUT="${INPUT:-my1.mp4}"
 # --- extract ---
 FACES_OUT="${FACES_OUT:-workspace/faces_my1}" # where extracted faces are written
 
+# --- dedupe (thin near-identical faces from slow-motion / consecutive frames) ---
+DEDUP_OUT="${DEDUP_OUT:-}"                     # output dir (default: <FACES_OUT>_dedup)
+DEDUP_THRESHOLD="${DEDUP_THRESHOLD:-6}"        # Hamming distance on 64-bit dHash.
+                                              #   lower = stricter (drops more); 0 = exact dupes only.
+                                              #   ~4-6 thins slow-motion runs; ~10+ very aggressive.
+
 # --- convert ---
 OUTPUT="${OUTPUT:-workspace/converted}"       # final swapped frames/video
 MODEL_DIR="${MODEL_DIR:-workspace/model}"     # trained model dir (pull from cloud first)
@@ -120,6 +126,51 @@ cmd_convert() {
   log "Convert complete -> $OUTPUT"
 }
 
+# Remove near-identical faces (slow-motion -> consecutive frames look the same).
+# Uses a 64-bit dHash; keeps an image only if it differs from every already-kept
+# image by >= DEDUP_THRESHOLD bits. Face PNGs carry their alignment metadata, so
+# the thinned folder is directly usable for training. Pure PIL+numpy (in image).
+cmd_dedupe() {
+  ensure_image
+  local src="$FACES_OUT" out="${DEDUP_OUT:-${FACES_OUT}_dedup}"
+  [ -d "$FS_DIR/$src" ] || { err "FACES_OUT not found: $src (run extract first)"; exit 1; }
+  mkdir -p "$FS_DIR/$out"
+  log "Deduping: $src -> $out (threshold=$DEDUP_THRESHOLD bits)"
+  docker run --rm -i --platform "$PLATFORM" \
+    -v "$FS_DIR":/fs -w /fs \
+    -e SRC="$src" -e OUT="$out" -e THRESH="$DEDUP_THRESHOLD" \
+    "$IMAGE" python - <<'PY'
+import os, shutil
+import numpy as np
+from PIL import Image
+
+src, out, thresh = os.environ["SRC"], os.environ["OUT"], int(os.environ["THRESH"])
+files = sorted(f for f in os.listdir(src) if f.lower().endswith(".png"))
+
+def dhash(path, size=8):
+    # 9x8 grayscale -> 64-bit row-wise gradient hash (robust to tiny shifts/noise).
+    img = Image.open(path).convert("L").resize((size + 1, size))
+    a = np.asarray(img, dtype=np.int16)
+    bits = a[:, 1:] > a[:, :-1]
+    return np.packbits(bits.flatten())
+
+kept_hashes, kept = [], 0
+for i, f in enumerate(files, 1):
+    h = dhash(os.path.join(src, f))
+    if kept_hashes:
+        dists = [int(np.unpackbits(h ^ kh).sum()) for kh in kept_hashes]
+        if min(dists) < thresh:
+            continue  # too similar to something already kept -> drop
+    kept_hashes.append(h)
+    shutil.copy2(os.path.join(src, f), os.path.join(out, f))
+    kept += 1
+
+print(f"Scanned {len(files)} faces -> kept {kept}, dropped {len(files) - kept} "
+      f"(threshold {thresh} bits) -> {out}")
+PY
+  log "Dedupe done -> $out ($(ls "$FS_DIR/$out" 2>/dev/null | wc -l | tr -d ' ') files)"
+}
+
 cmd_shell() {
   ensure_image
   docker run --rm -it --platform "$PLATFORM" \
@@ -131,14 +182,16 @@ cmd_shell() {
 case "${1:-}" in
   build)   cmd_build ;;
   extract) cmd_extract ;;
+  dedupe)  cmd_dedupe ;;
   convert) cmd_convert ;;
   shell)   cmd_shell ;;
   *)
     cat <<EOF
-Usage: $0 {build|extract|convert|shell}
+Usage: $0 {build|extract|dedupe|convert|shell}
 
   build    Build the CPU image once (bakes deps; runs are instant afterwards)
   extract  Detect faces + alignments from INPUT -> FACES_OUT
+  dedupe   Drop near-identical faces (slow-motion frames) FACES_OUT -> *_dedup
   convert  Apply trained MODEL_DIR onto INPUT -> OUTPUT (the face swap)
   shell    Open a bash shell inside the container (debugging)
 
@@ -147,6 +200,7 @@ natively. This runs the linux/amd64 CPU build instead. (Train -> use setup-vast.
 
 Examples:
   INPUT=my1.mp4 FACES_OUT=workspace/faces_my1 $0 extract
+  FACES_OUT=workspace/faces_my1 DEDUP_THRESHOLD=6 $0 dedupe   # thin look-alike frames
   REF_DIR=workspace/ref_A REF_THRESHOLD=0.6 FACES_OUT=workspace/faces_A $0 extract
   INPUT=src.mp4 OUTPUT=workspace/out MODEL_DIR=workspace/model $0 convert
 EOF

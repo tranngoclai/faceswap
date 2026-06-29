@@ -132,6 +132,34 @@ INPUT=my1.mp4 OUTPUT=workspace/out MODEL_DIR=workspace/model ./docker-faceswap.s
 
 ---
 
+## 1d. Lọc ảnh trùng (dedupe) {#loc-anh-trung-dedupe}
+
+> **Vì sao cần:** mặt di chuyển chậm trong video → các frame liên tiếp cho ra mặt **gần như trùng khít**. Train trên data lặp = phình dung lượng, không thêm thông tin, dễ **overfit**.
+
+`docker-faceswap.sh dedupe` tính **dHash 64-bit** mỗi mặt, bỏ ảnh nào có khoảng cách Hamming `< DEDUP_THRESHOLD` so với **mọi ảnh đã giữ** (loại cả mặt lặp ở đoạn khác của video). PNG vẫn giữ metadata alignment → train được ngay.
+
+```bash
+# Sau extract: lọc trùng ở threshold 6 -> ghi ra <FACES_OUT>_dedup
+FACES_OUT=workspace/faces_my1 DEDUP_THRESHOLD=6 ./docker-faceswap.sh dedupe
+# -> workspace/faces_my1_dedup/
+```
+
+**Chọn threshold** (số bit; cao = bỏ nhiều hơn). Ví dụ thực tế trên 787 faces:
+
+| Threshold | Giữ lại | Mức lọc |
+|-----------|---------|---------|
+| 2 | 539 | nhẹ (chỉ bỏ gần khít) |
+| 4 | 319 | vừa |
+| **6** | **197** | **khuyến nghị** (cân bằng) |
+| 8 | 137 | mạnh |
+| 12 | 68 | rất mạnh (dễ mất pose hữu ích) |
+
+> **Khuyến nghị train:** threshold **4–6** — bỏ frame slow-motion trùng nhưng **vẫn giữ đa dạng** góc/biểu cảm. Đừng ép quá mạnh (train cần variety). Lý tưởng: gộp nhiều clip nguồn rồi mới dedupe.
+>
+> **Thay thế (faceswap native):** `tools.py sort -g hist -t 0.2` gom mặt giống vào bin numbered để thưa tay — xem [mục 1b](#xu-ly-anh-nhieu-mat-multi-face) về `tools.py sort`.
+
+---
+
 ## 2. Thuê instance trên vast.ai
 
 | Mục | Khuyến nghị |
@@ -274,6 +302,7 @@ INPUT=workspace/src.mp4 OUTPUT=workspace/converted MODEL_DIR=workspace/model \
 | Lệnh | Tác dụng |
 |------|----------|
 | `extract` | Detect faces + tạo alignments cho input (lọc 1 người nếu set `REF_DIR`) |
+| `dedupe` | (Docker) Bỏ ảnh trùng từ `FACES_OUT` → `*_dedup` (xem [mục 1d](#loc-anh-trung-dedupe)) |
 | `convert` | Áp model đã train lên input → output (lọc 1 người nếu set `REF_DIR`) |
 | `build` | (Docker) build image `faceswap-cpu:local` 1 lần |
 | `shell` | (Docker) bash shell trong container để debug |
@@ -287,6 +316,7 @@ Biến quan trọng: `REF_DIR` (folder reference 1 mặt đã duyệt), `REF_THR
 ## Checklist nhanh
 
 - [ ] Extract faces A & B ở local
+- [ ] (Intel Mac) Dùng `docker-faceswap.sh`; lọc trùng bằng `dedupe` nếu nguồn là video
 - [ ] Thuê instance `vastai/base-image` CUDA 12.8 (KHÔNG dùng TF image)
 - [ ] `./setup-vast.sh all` → thấy `CUDA available: True`
 - [ ] Upload + giải nén faces
