@@ -40,6 +40,59 @@ python faceswap.py extract -i <media_B> -o workspace/faces_B
 tar czf faces.tar.gz workspace/faces_A workspace/faces_B
 ```
 
+> **Ảnh/video có nhiều mặt?** Mặc định extract lấy TẤT CẢ mặt → data lẫn lộn nhiều người, train hỏng. Xem mục [Xử lý ảnh nhiều mặt](#xu-ly-anh-nhieu-mat-multi-face) bên dưới.
+
+---
+
+## 1b. Xử lý ảnh nhiều mặt (multi-face) {#xu-ly-anh-nhieu-mat-multi-face}
+
+Mục tiêu: thư mục faces chỉ chứa **một nhân dạng**.
+
+### Cách làm: folder reference đã duyệt (khuyến nghị)
+
+Tạo một folder **đã duyệt thủ công, chỉ chứa duy nhất 1 khuôn mặt** của người cần lấy. Mỗi lần extract, faceswap dùng folder này làm **ảnh đối chiếu** (positive filter `-f`) → chỉ giữ đúng người đó, bỏ qua mọi mặt khác trong khung hình.
+
+```
+workspace/
+├── ref_identity/        # FOLDER ĐÃ DUYỆT: 3-10 ảnh, DUY NHẤT 1 người,
+│                        #   đa dạng góc mặt + ánh sáng. Curate 1 lần, tái dùng.
+├── faces_A/             # output extract (đã được lọc theo ref_identity)
+└── src.mp4
+```
+
+`convert-faces.sh` đã tích hợp folder này qua biến `REF_DIR`:
+
+```bash
+# Build training data: chỉ extract đúng 1 người dựa trên folder reference
+FACES_OUT=workspace/faces_A REF_DIR=workspace/ref_A REF_THRESHOLD=0.6 \
+  ./convert-faces.sh extract
+```
+
+Hoặc gọi trực tiếp faceswap:
+```bash
+python faceswap.py extract -i <media> -o workspace/faces_A \
+  -f workspace/ref_A/ -l 0.6
+```
+
+| Flag | Biến script | Tác dụng |
+|------|-------------|----------|
+| `-f` / `--filter` | `REF_DIR` | Chỉ giữ người trong folder reference |
+| `-l` / `--ref_threshold` | `REF_THRESHOLD` | Ngưỡng nhận diện (mặc định `0.60`; cao = chặt hơn) |
+| `-n` / `--nfilter` | — | (ngược lại) loại bỏ người không muốn |
+
+> Để trống/không có `REF_DIR` → extract lấy TẤT CẢ mặt (hành vi cũ).
+
+### Cách thay thế: dọn tay sau extract
+
+```bash
+python tools.py sort -i workspace/faces_A -o workspace/faces_A_sorted -s face
+# -> nhóm theo nhân dạng, mở folder xoá tay mặt thừa
+```
+
+### Lưu ý convert
+
+Convert cũng swap MỌI mặt khớp trong frame. Đặt cùng `REF_DIR` → chỉ ghép đúng 1 người (script tự thêm `-f` ở bước convert).
+
 ---
 
 ## 2. Thuê instance trên vast.ai
@@ -162,6 +215,8 @@ INPUT=workspace/src.mp4 OUTPUT=workspace/converted MODEL_DIR=workspace/model \
 | `OUTPUT_SCALE` | `100` | % kích thước so với gốc |
 
 > Convert cần **alignments của video nguồn** (không phải data train). Để trống `ALIGNMENTS` thì faceswap tự dò file cạnh input.
+>
+> **Frame nhiều mặt?** Đặt `REF_DIR=workspace/ref_A` khi convert → chỉ ghép đúng 1 người (xem mục [Xử lý ảnh nhiều mặt](#xu-ly-anh-nhieu-mat-multi-face)).
 
 ---
 
@@ -181,8 +236,10 @@ INPUT=workspace/src.mp4 OUTPUT=workspace/converted MODEL_DIR=workspace/model \
 ### `convert-faces.sh` (local)
 | Lệnh | Tác dụng |
 |------|----------|
-| `extract` | Detect faces + tạo alignments cho input |
-| `convert` | Áp model đã train lên input → output |
+| `extract` | Detect faces + tạo alignments cho input (lọc 1 người nếu set `REF_DIR`) |
+| `convert` | Áp model đã train lên input → output (lọc 1 người nếu set `REF_DIR`) |
+
+Biến quan trọng: `REF_DIR` (folder reference 1 mặt đã duyệt), `REF_THRESHOLD` (0.60), `FACES_OUT` (thư mục output extract).
 
 ---
 
