@@ -118,35 +118,51 @@ Script `docker-faceswap.sh` ở repo root bọc extract/convert trong container:
 - Cùng bộ biến config với `convert-faces.sh`: `INPUT`, `OUTPUT`, `MODEL_DIR`, `REF_DIR`, `REF_THRESHOLD`, `WRITER`, `COLOR_ADJ`, `MASK_TYPE`, `OUTPUT_SCALE`
 - Hỗ trợ identity filter (`REF_DIR`) cho video nhiều mặt như mục 1b
 
+### Workspace theo nhân dạng (train nhiều mặt)
+
+Mỗi người là **một workspace riêng** dưới `workspace/<WS>/`. Tham số `WS` (workspace name) — nếu **không truyền** thì lấy **tên file input** (`my1.mp4` → `my1`). Train nhiều mặt thì đặt `WS` rõ ràng để **không đụng nhau**.
+
+```
+workspace/<WS>/
+├── ref/         # ảnh tham chiếu (1 nhân dạng) — bạn bỏ vào đây
+├── review/      # các lần extract+dedupe có timestamp (duyệt ở đây)
+│   └── 20260630-012304/   (197 faces)
+├── faces/       # move mặt đã duyệt vào đây (data train / ALIGNED_DIR)
+├── model/       # model train xong (pull từ cloud)
+└── converted/   # output convert
+```
+
 ### Flow extract (review thủ công)
 
-`extract` chạy **extract → dedupe → folder review có timestamp** mỗi lần. Bạn duyệt folder đó (xoá mặt xấu), rồi **tự move** mặt đã duyệt sang folder mà convert/train cần. Các lần chạy **không ghi đè** nhau.
+`extract` chạy **extract → dedupe → folder review có timestamp** mỗi lần. Bạn duyệt folder đó (xoá mặt xấu), rồi **tự move** mặt đã duyệt sang `workspace/<WS>/faces/`. Các lần chạy **không ghi đè** nhau.
 
 ```bash
 INPUT=my1.mp4 ./docker-faceswap.sh extract
-# -> workspace/review/20260630-012304/  (197 faces, đã dedupe mặc định)
-#    Duyệt -> move sang faces_A (train) hoặc ALIGNED_DIR (convert)
+# WS=my1 (lấy từ tên input) -> workspace/my1/review/20260630-012304/ (197 faces)
 
-INPUT=my1.mp4 ./docker-faceswap.sh extract dedupe=false
-# -> giữ TẤT CẢ faces (787), không lọc trùng
+WS=alice INPUT=alice.mp4 ./docker-faceswap.sh extract   # -> workspace/alice/...
+WS=bob   INPUT=bob.mov   ./docker-faceswap.sh extract   # -> workspace/bob/...  (tách biệt)
+
+INPUT=my1.mp4 ./docker-faceswap.sh extract dedupe=false  # giữ TẤT CẢ faces (787)
 ```
 
 > **Mặc định extract đã kèm dedupe.** Tắt cho 1 lần chạy bằng flag `dedupe=false` (hoặc `DEDUP_THRESHOLD=0`).
 
 | Biến | Mặc định | Tác dụng |
 |------|----------|----------|
-| `REVIEW_DIR` | `workspace/review` | Nơi chứa các folder review timestamp |
+| `WS` | tên file input | Workspace name → mọi path dưới `workspace/<WS>/` |
+| `REF_DIR` | `workspace/<WS>/ref` | Ảnh tham chiếu, lọc 1 nhân dạng (mục 1b) |
 | `DEDUP_THRESHOLD` | `6` | Mức lọc trùng (0 = tắt dedupe, giữ tất cả) — xem [mục 1d](#loc-anh-trung-dedupe) |
 | `KEEP_RAW` | `0` | `1` = giữ thêm faces raw trước dedupe (ở `<run>_raw`) |
-| `REF_DIR` | `workspace/ref_identity` | Lọc 1 nhân dạng (mục 1b) |
+| `MODEL_DIR` | `workspace/<WS>/model` | Model dir (pull từ cloud) |
+| `OUTPUT` | `workspace/<WS>/converted` | Output convert |
 
 ```bash
-# Giữ nhiều hơn (lọc nhẹ) + chỉ 1 người:
-INPUT=my1.mp4 DEDUP_THRESHOLD=4 REF_DIR=workspace/ref_A ./docker-faceswap.sh extract
+# Giữ nhiều hơn (lọc nhẹ) — ảnh tham chiếu đặt sẵn ở workspace/alice/ref/:
+WS=alice INPUT=alice.mp4 DEDUP_THRESHOLD=4 ./docker-faceswap.sh extract
 
-# Convert sau khi pull model từ cloud (đặt ALIGNED_DIR = folder đã duyệt):
-INPUT=my1.mp4 OUTPUT=workspace/out MODEL_DIR=workspace/model \
-  ALIGNED_DIR=workspace/faces_approved ./docker-faceswap.sh convert
+# Convert: tự dùng workspace/alice/model + workspace/alice/converted
+WS=alice INPUT=alice.mp4 ALIGNED_DIR=workspace/alice/faces ./docker-faceswap.sh convert
 ```
 
 > **Phân vai:** extract/convert → Docker local (`docker-faceswap.sh`); **train → GPU vast.ai** (`setup-vast.sh`). Đừng train trên Intel Mac CPU — quá chậm.
