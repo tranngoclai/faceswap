@@ -21,6 +21,7 @@
 # Cloud training helper scripts (vast.ai)
 !/setup-vast.sh
 !/convert-faces.sh
+!/docker-faceswap.sh
 
 # Support files
 !/.github/

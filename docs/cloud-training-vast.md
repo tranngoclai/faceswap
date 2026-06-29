@@ -3,7 +3,8 @@
 Hướng dẫn train model faceswap trên GPU thuê tại [vast.ai](https://cloud.vast.ai), kèm 2 script tự động ở repo root:
 
 - **`setup-vast.sh`** — chạy trên instance cloud (install / check / train / board / sync / pull)
-- **`convert-faces.sh`** — chạy ở local (extract / convert)
+- **`convert-faces.sh`** — chạy ở local có torch native (extract / convert)
+- **`docker-faceswap.sh`** — chạy ở local qua Docker (extract / convert) — **bắt buộc trên Intel Mac**
 
 > **Backend:** bản faceswap này dùng **PyTorch 2.9 + Keras 3** (KHÔNG còn TensorFlow). Cần **NVIDIA GPU + CUDA**.
 
@@ -92,6 +93,42 @@ python tools.py sort -i workspace/faces_A -o workspace/faces_A_sorted -s face
 ### Lưu ý convert
 
 Convert cũng swap MỌI mặt khớp trong frame. Đặt cùng `REF_DIR` → chỉ ghép đúng 1 người (script tự thêm `-f` ở bước convert).
+
+---
+
+## 1c. Extract/Convert trên macOS qua Docker (Intel Mac) {#extract-convert-macos-docker}
+
+> **Vì sao cần Docker:** PyTorch đã **bỏ build wheel cho macOS Intel (x86_64)**. faceswap cần `torchvision>=0.18`, mà bản này **không có wheel macOS x86_64 nào** → extract/convert **không chạy native được** trên Intel Mac. Giải pháp: chạy trong **Linux CPU container** (native amd64 trên Intel Mac, emulated trên Apple Silicon).
+>
+> Apple Silicon (M1–M4) có thể chạy native bằng `requirements_apple-silicon.txt` (torch MPS) — không cần Docker.
+
+Script `docker-faceswap.sh` ở repo root bọc extract/convert trong container:
+
+```bash
+./docker-faceswap.sh build      # build image faceswap-cpu:local 1 lần (bake deps)
+./docker-faceswap.sh extract    # detect faces + alignments
+./docker-faceswap.sh convert    # ghép mặt (cần MODEL_DIR pull từ cloud)
+./docker-faceswap.sh shell      # bash shell trong container (debug)
+```
+
+**Đặc điểm:**
+- Image bake sẵn deps → các lần chạy sau **tức thì** (không cài lại torch mỗi lần)
+- Volume `faceswap-fs-cache` giữ model weights của detector/aligner → lần 2 không tải lại
+- Cùng bộ biến config với `convert-faces.sh`: `INPUT`, `FACES_OUT`, `OUTPUT`, `MODEL_DIR`, `REF_DIR`, `REF_THRESHOLD`, `WRITER`, `COLOR_ADJ`, `MASK_TYPE`, `OUTPUT_SCALE`
+- Hỗ trợ identity filter (`REF_DIR`) cho video nhiều mặt như mục 1b
+
+```bash
+# Ví dụ extract đã verify (804 frames -> 787 faces, ~40s CPU):
+INPUT=my1.mp4 FACES_OUT=workspace/faces_my1 ./docker-faceswap.sh extract
+
+# Extract chỉ 1 người (lọc theo folder reference đã duyệt):
+REF_DIR=workspace/ref_A FACES_OUT=workspace/faces_A ./docker-faceswap.sh extract
+
+# Convert sau khi pull model từ cloud:
+INPUT=my1.mp4 OUTPUT=workspace/out MODEL_DIR=workspace/model ./docker-faceswap.sh convert
+```
+
+> **Phân vai:** extract/convert → Docker local (`docker-faceswap.sh`); **train → GPU vast.ai** (`setup-vast.sh`). Đừng train trên Intel Mac CPU — quá chậm.
 
 ---
 
@@ -233,13 +270,17 @@ INPUT=workspace/src.mp4 OUTPUT=workspace/converted MODEL_DIR=workspace/model \
 | `pull` | Kéo model từ remote → local |
 | `all` | install + check |
 
-### `convert-faces.sh` (local)
+### `convert-faces.sh` / `docker-faceswap.sh` (local)
 | Lệnh | Tác dụng |
 |------|----------|
 | `extract` | Detect faces + tạo alignments cho input (lọc 1 người nếu set `REF_DIR`) |
 | `convert` | Áp model đã train lên input → output (lọc 1 người nếu set `REF_DIR`) |
+| `build` | (Docker) build image `faceswap-cpu:local` 1 lần |
+| `shell` | (Docker) bash shell trong container để debug |
 
 Biến quan trọng: `REF_DIR` (folder reference 1 mặt đã duyệt), `REF_THRESHOLD` (0.60), `FACES_OUT` (thư mục output extract).
+
+> **Intel Mac:** dùng `docker-faceswap.sh` (native torch không có wheel x86_64 macOS — xem [mục 1c](#extract-convert-macos-docker)). Apple Silicon / Linux: dùng `convert-faces.sh` trực tiếp.
 
 ---
 
