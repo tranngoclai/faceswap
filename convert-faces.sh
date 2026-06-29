@@ -41,6 +41,20 @@ ALIGNMENTS="${ALIGNMENTS:-}"
 # and lets you curate which faces get swapped). Leave empty to convert all.
 ALIGNED_DIR="${ALIGNED_DIR:-}"
 
+# --- Identity filter (handle media with MULTIPLE faces) -------------------------
+# REF_DIR: a curated/approved folder holding images of the ONE identity you want.
+#   Used as faceswap's positive filter (-f) on BOTH extract and convert, so every
+#   run only keeps/swaps that single person and ignores everyone else in frame.
+#   Put a small, varied set (different angles + lighting) of that person here.
+#   Leave empty to disable filtering (keeps ALL detected faces — old behavior).
+REF_DIR="${REF_DIR:-workspace/ref_identity}"
+
+# Face-recognition threshold for REF_DIR matching (0.01-0.99). Higher = stricter.
+REF_THRESHOLD="${REF_THRESHOLD:-0.60}"
+
+# Where extracted faces are written (review folder). Override to extract training data.
+FACES_OUT="${FACES_OUT:-workspace/src_faces}"
+
 # Output writer: ffmpeg (video) | opencv | pillow (image sequence).
 # Use ffmpeg if INPUT is a video and you want a video out.
 WRITER="${WRITER:-ffmpeg}"
@@ -65,11 +79,21 @@ cmd_extract() {
   cd "$FS_DIR"
   local in out
   in="$(abspath "$INPUT")"
-  out="$(abspath "workspace/src_faces")"   # extracted faces (for review/curation)
+  out="$(abspath "$FACES_OUT")"            # extracted faces (for review/curation)
   [ -e "$in" ] || { err "INPUT not found: $in"; exit 1; }
   mkdir -p "$out"
+
+  local args=( -i "$in" -o "$out" )
+  # If a curated reference folder exists, only keep that ONE identity (-f filter).
+  if [ -n "$REF_DIR" ] && [ -d "$(abspath "$REF_DIR")" ]; then
+    args+=( -f "$(abspath "$REF_DIR")" -l "$REF_THRESHOLD" )
+    log "Identity filter ON -> ref=$REF_DIR threshold=$REF_THRESHOLD (single face only)"
+  else
+    log "Identity filter OFF -> extracting ALL detected faces (REF_DIR empty/missing)"
+  fi
+
   log "Extracting faces + alignments from: $in"
-  python faceswap.py extract -i "$in" -o "$out"
+  python faceswap.py extract "${args[@]}"
   log "Extract done. alignments file written next to the input."
 }
 
@@ -90,6 +114,11 @@ cmd_convert() {
                -w "$WRITER" -c "$COLOR_ADJ" -M "$MASK_TYPE" -O "$OUTPUT_SCALE" )
   [ -n "$ALIGNMENTS" ] && args+=( -p "$(abspath "$ALIGNMENTS")" )
   [ -n "$ALIGNED_DIR" ] && args+=( -a "$(abspath "$ALIGNED_DIR")" )
+  # Same curated reference -> only swap that ONE identity, ignore other faces in frame.
+  if [ -n "$REF_DIR" ] && [ -d "$(abspath "$REF_DIR")" ]; then
+    args+=( -f "$(abspath "$REF_DIR")" -l "$REF_THRESHOLD" )
+    log "Identity filter ON -> ref=$REF_DIR threshold=$REF_THRESHOLD (swap single face only)"
+  fi
 
   log "Converting: writer=$WRITER color=$COLOR_ADJ mask=$MASK_TYPE scale=${OUTPUT_SCALE}%"
   log "  input : $in"
@@ -109,8 +138,14 @@ Usage: $0 {extract|convert}
   extract  (optional) Detect faces in INPUT + build alignments file
   convert  Apply trained MODEL_DIR onto INPUT -> OUTPUT (the face swap)
 
+Multiple faces in frame? Put a curated set of the ONE person into REF_DIR
+(default workspace/ref_identity). Both extract & convert then keep/swap only
+that identity. Empty/missing REF_DIR = process ALL faces (old behavior).
+
 Override config via env vars, e.g.:
   INPUT=workspace/src.mp4 OUTPUT=workspace/out MODEL_DIR=workspace/model $0 convert
+  REF_DIR=workspace/ref_A REF_THRESHOLD=0.6 $0 extract
+  FACES_OUT=workspace/faces_A REF_DIR=workspace/ref_A $0 extract   # build training data
   WRITER=opencv COLOR_ADJ=color-transfer MASK_TYPE=extended $0 convert
 EOF
     exit 1 ;;
