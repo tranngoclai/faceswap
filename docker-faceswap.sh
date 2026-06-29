@@ -13,6 +13,7 @@
 # USAGE:
 #   ./docker-faceswap.sh build              # build the CPU image once (bakes deps)
 #   ./docker-faceswap.sh extract            # extract -> dedupe -> timestamped review folder
+#                                           #   (add `dedupe=false` to skip dedupe)
 #   ./docker-faceswap.sh dedupe             # re-thin an existing faces folder
 #   ./docker-faceswap.sh convert            # apply trained MODEL_DIR -> swapped output
 #   ./docker-faceswap.sh shell              # drop into a bash shell in the container
@@ -51,6 +52,7 @@ DEDUP_THRESHOLD="${DEDUP_THRESHOLD:-6}"        # Hamming distance on 64-bit dHas
 # needs. Nothing is overwritten between runs.
 REVIEW_DIR="${REVIEW_DIR:-workspace/review}"  # parent folder for timestamped review runs
 KEEP_RAW="${KEEP_RAW:-0}"                      # 1 = also keep the pre-dedupe raw faces (in <run>_raw)
+DEDUP="${DEDUP:-true}"                          # extract dedupes by default; disable with `dedupe=false`
 
 # --- convert ---
 OUTPUT="${OUTPUT:-workspace/converted}"       # final swapped frames/video
@@ -166,6 +168,17 @@ PY
 cmd_extract() {
   ensure_image
   [ -e "$FS_DIR/$INPUT" ] || { err "INPUT not found: $INPUT (relative to $FS_DIR)"; exit 1; }
+
+  # Inline toggle: `extract dedupe=false` disables dedupe for this run.
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      dedupe=false|dedupe=no|dedupe=0)  DEDUP=false ;;
+      dedupe=true|dedupe=yes|dedupe=1)  DEDUP=true ;;
+      *) err "Unknown extract option: $arg (use dedupe=true|false)"; exit 1 ;;
+    esac
+  done
+
   local stamp run raw
   stamp="$(date +%Y%m%d-%H%M%S)"
   run="$REVIEW_DIR/$stamp"                      # final reviewed faces land here
@@ -173,7 +186,8 @@ cmd_extract() {
 
   extract_to "$raw"
 
-  if [ "$DEDUP_THRESHOLD" -gt 0 ]; then
+  # Dedupe by default; skip if dedupe=false OR DEDUP_THRESHOLD=0.
+  if [ "$DEDUP" = "true" ] && [ "$DEDUP_THRESHOLD" -gt 0 ]; then
     log "Deduping into review folder (threshold=$DEDUP_THRESHOLD bits)"
     dedupe_dir "$raw" "$run" "$DEDUP_THRESHOLD"
     if [ "$KEEP_RAW" = "1" ]; then
@@ -182,7 +196,7 @@ cmd_extract() {
       rm -rf "$FS_DIR/$raw"
     fi
   else
-    log "DEDUP_THRESHOLD=0 -> skipping dedupe (keeping all faces)"
+    log "Dedupe OFF (dedupe=false or DEDUP_THRESHOLD=0) -> keeping all faces"
     mv "$FS_DIR/$raw" "$FS_DIR/$run"
   fi
 
@@ -230,7 +244,7 @@ cmd_shell() {
 
 case "${1:-}" in
   build)   cmd_build ;;
-  extract) cmd_extract ;;
+  extract) cmd_extract "${@:2}" ;;
   dedupe)  cmd_dedupe ;;
   convert) cmd_convert ;;
   shell)   cmd_shell ;;
@@ -239,8 +253,9 @@ case "${1:-}" in
 Usage: $0 {build|extract|dedupe|convert|shell}
 
   build    Build the CPU image once (bakes deps; runs are instant afterwards)
-  extract  Detect faces -> dedupe -> fresh TIMESTAMPED folder under REVIEW_DIR.
-           You then curate it and MOVE the keepers where convert/train needs.
+  extract  Detect faces -> dedupe (default) -> fresh TIMESTAMPED folder under
+           REVIEW_DIR. You then curate it and MOVE the keepers where convert/
+           train needs. Disable dedupe for a run with: extract dedupe=false
   dedupe   Standalone: re-thin an existing FACES_OUT folder -> DEDUP_OUT
   convert  Apply trained MODEL_DIR onto INPUT -> OUTPUT (the face swap)
   shell    Open a bash shell inside the container (debugging)
@@ -253,7 +268,8 @@ delete bad faces, then move the approved faces into your target folder. Tune wit
 DEDUP_THRESHOLD (0 = no dedupe), KEEP_RAW=1 to also keep pre-dedupe faces.
 
 Examples:
-  INPUT=my1.mp4 $0 extract                       # -> workspace/review/<timestamp>/
+  INPUT=my1.mp4 $0 extract                       # -> workspace/review/<timestamp>/ (deduped)
+  INPUT=my1.mp4 $0 extract dedupe=false          # skip dedupe (keep all faces)
   INPUT=my1.mp4 DEDUP_THRESHOLD=4 $0 extract     # keep more (lighter dedupe)
   INPUT=my1.mp4 REF_DIR=workspace/ref_A $0 extract   # single-identity only
   REVIEW_DIR=workspace/review_B INPUT=b.mp4 $0 extract
