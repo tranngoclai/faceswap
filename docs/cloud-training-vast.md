@@ -124,9 +124,14 @@ Script `docker-faceswap.sh` ở repo root bọc extract/convert trong container:
 
 ```bash
 INPUT=my1.mp4 ./docker-faceswap.sh extract
-# -> workspace/review/20260630-012304/  (197 faces, đã dedupe)
+# -> workspace/review/20260630-012304/  (197 faces, đã dedupe mặc định)
 #    Duyệt -> move sang faces_A (train) hoặc ALIGNED_DIR (convert)
+
+INPUT=my1.mp4 ./docker-faceswap.sh extract dedupe=false
+# -> giữ TẤT CẢ faces (787), không lọc trùng
 ```
+
+> **Mặc định extract đã kèm dedupe.** Tắt cho 1 lần chạy bằng flag `dedupe=false` (hoặc `DEDUP_THRESHOLD=0`).
 
 | Biến | Mặc định | Tác dụng |
 |------|----------|----------|
