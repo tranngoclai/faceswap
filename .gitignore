@@ -18,6 +18,10 @@
 !/tools.py
 !/update_deps.py
 
+# Cloud training helper scripts (vast.ai)
+!/setup-vast.sh
+!/convert-faces.sh
+
 # Support files
 !/.github/
 !/.github/workflows/
