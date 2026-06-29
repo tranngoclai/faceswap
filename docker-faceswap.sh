@@ -15,6 +15,7 @@
 #   ./docker-faceswap.sh extract            # extract -> dedupe -> timestamped review folder
 #                                           #   (add `dedupe=false` to skip dedupe)
 #   ./docker-faceswap.sh dedupe             # re-thin an existing faces folder
+#   ./docker-faceswap.sh sharp              # report blur / drop blurry faces
 #   ./docker-faceswap.sh convert            # apply trained MODEL_DIR -> swapped output
 #   ./docker-faceswap.sh shell              # drop into a bash shell in the container
 #
@@ -50,12 +51,30 @@ WS_DIR="workspace/$WS"
 REF_DIR="${REF_DIR:-$WS_DIR/ref}"             # populate with images of the ONE person to keep/swap
 REF_THRESHOLD="${REF_THRESHOLD:-0.60}"        # higher = stricter match
 
+# --- extract quality (balanced high-quality defaults; CPU-friendly) ---
+# Defaults chosen for best quality WITHOUT the painfully-slow combos on CPU:
+#   retinaface = ~s3fd quality but much faster; hrnet = best aligner AND faster than fan.
+# For MAXIMUM quality (slower on CPU): DETECTOR=s3fd MASKER=bisenet-fp
+DETECTOR="${DETECTOR:-retinaface}"            # retinaface (best speed/quality) | s3fd (max, slow) | mtcnn | cv2-dnn
+ALIGNER="${ALIGNER:-hrnet}"                    # hrnet (best, fully-rotated, fast) | fan | cv2-dnn
+MASKER="${MASKER:-}"                           # extra mask (slow): bisenet-fp (refined) | vgg-clear | "" skip
+EXTRACT_SIZE="${EXTRACT_SIZE:-512}"           # output face px (model must support this size)
+MIN_SIZE="${MIN_SIZE:-0}"                      # drop faces < N% of frame's short side (0=off; ~10 skips tiny)
+EXTRACT_NORM="${EXTRACT_NORM:-hist}"          # aligner input normalization: none|hist|clahe|mean (helps lighting)
+EXTRACT_EVERY_N="${EXTRACT_EVERY_N:-1}"       # sample every Nth frame (>1 cuts source redundancy + time)
+
 # --- dedupe (thin near-identical faces from slow-motion / consecutive frames) ---
 FACES_OUT="${FACES_OUT:-$WS_DIR/faces}"        # standalone `dedupe` input folder
 DEDUP_OUT="${DEDUP_OUT:-}"                     # standalone `dedupe` output (default: <FACES_OUT>_dedup)
 DEDUP_THRESHOLD="${DEDUP_THRESHOLD:-6}"        # Hamming distance on 64-bit dHash.
                                               #   lower = stricter (drops more); 0 = no dedupe (keep all).
                                               #   ~4-6 thins slow-motion runs; ~10+ very aggressive.
+
+# --- sharpness filter (drop blurry / out-of-focus faces) ---
+SHARP_OUT="${SHARP_OUT:-}"                     # standalone `sharp` output (default: <FACES_OUT>_sharp)
+BLUR_THRESHOLD="${BLUR_THRESHOLD:-0}"          # min Laplacian variance; faces below = blurry, dropped.
+                                              #   0 = REPORT mode (print distribution, copy nothing).
+                                              #   typical face crops: <50 very blurry, 100-300 ok, >300 sharp.
 
 # --- extract review flow: extract -> dedupe -> timestamped folder for manual review ---
 # Each `extract` run writes a fresh timestamped folder under REVIEW_DIR. You curate
@@ -115,18 +134,23 @@ run_fs() {
     "$IMAGE" python faceswap.py "$@"
 }
 
-# Run faceswap extract for INPUT into a given output dir (repo-relative).
+# Run faceswap extract for INPUT into a given output dir (repo-relative), using
+# the configured best-quality plugins (detector/aligner/masker/size/normalization).
 extract_to() {
   local out="$1"
   mkdir -p "$FS_DIR/$out"
-  local args=( extract -i "$INPUT" -o "$out" )
+  local args=( extract -i "$INPUT" -o "$out"
+               -D "$DETECTOR" -A "$ALIGNER" -z "$EXTRACT_SIZE" -O "$EXTRACT_NORM" )
+  [ -n "$MASKER" ]            && args+=( -M "$MASKER" )
+  [ "$MIN_SIZE" -gt 0 ]       && args+=( -m "$MIN_SIZE" )
+  [ "$EXTRACT_EVERY_N" -gt 1 ] && args+=( -N "$EXTRACT_EVERY_N" )
   if [ -n "$REF_DIR" ] && [ -d "$FS_DIR/$REF_DIR" ]; then
     args+=( -f "$REF_DIR" -l "$REF_THRESHOLD" )
     log "Identity filter ON -> ref=$REF_DIR threshold=$REF_THRESHOLD (single face only)"
   else
     log "Identity filter OFF -> extracting ALL detected faces (REF_DIR empty/missing)"
   fi
-  log "Extracting: $INPUT -> $out"
+  log "Extracting: $INPUT -> $out  (detector=$DETECTOR aligner=$ALIGNER mask=${MASKER:-none} size=$EXTRACT_SIZE norm=$EXTRACT_NORM)"
   run_fs "${args[@]}"
 }
 
@@ -208,6 +232,17 @@ cmd_extract() {
     mv "$FS_DIR/$raw" "$FS_DIR/$run"
   fi
 
+  # Optional in-flow sharpness filter: drop blurry faces when BLUR_THRESHOLD>0.
+  if [ "$BLUR_THRESHOLD" -gt 0 ]; then
+    log "Sharpness filter into review folder (drop variance < $BLUR_THRESHOLD)"
+    local pre="${run}_blurry"
+    mv "$FS_DIR/$run" "$FS_DIR/$pre"
+    blur_filter "$pre" "$run" "$BLUR_THRESHOLD"
+    [ "$KEEP_RAW" = "1" ] && log "KEEP_RAW=1 -> blurry faces kept at $pre" || rm -rf "$FS_DIR/$pre"
+  else
+    log "Sharpness filter OFF (BLUR_THRESHOLD=0). Tip: '$0 sharp' to report blur, then set BLUR_THRESHOLD."
+  fi
+
   local n; n="$(ls "$FS_DIR/$run" 2>/dev/null | wc -l | tr -d ' ')"
   log "Review folder ready -> $run ($n faces)"
   log "NEXT: review $run, delete bad faces, then MOVE the keepers into:"
@@ -242,6 +277,58 @@ cmd_dedupe() {
   log "Dedupe done -> $out ($(ls "$FS_DIR/$out" 2>/dev/null | wc -l | tr -d ' ') files)"
 }
 
+# Sharpness filter: drop blurry faces by Laplacian variance (cv2). THRESH<=0 =
+# REPORT only (print blur distribution, copy nothing) so you can pick a value.
+# Shared by `extract` (in-flow) and the standalone `sharp` command (DRY).
+blur_filter() {
+  local src="$1" out="$2" thresh="$3"
+  [ "$thresh" -gt 0 ] && mkdir -p "$FS_DIR/$out"
+  docker run --rm -i --platform "$PLATFORM" \
+    -v "$FS_DIR":/fs -w /fs \
+    -e SRC="$src" -e OUT="$out" -e THRESH="$thresh" \
+    "$IMAGE" python - <<'PY'
+import os, shutil
+import cv2
+
+src, out, thresh = os.environ["SRC"], os.environ["OUT"], float(os.environ["THRESH"])
+files = sorted(f for f in os.listdir(src) if f.lower().endswith(".png"))
+
+def sharpness(path):
+    # Variance of the Laplacian: low = blurry / out of focus, high = crisp edges.
+    g = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+    return float(cv2.Laplacian(g, cv2.CV_64F).var())
+
+vals = [(f, sharpness(os.path.join(src, f))) for f in files]
+vs = sorted(v for _, v in vals)
+pct = lambda p: vs[min(len(vs) - 1, int(p * len(vs)))] if vs else 0.0
+print(f"Blur (Laplacian variance) over {len(vals)} faces:")
+print(f"  min={vs[0]:.0f}  p10={pct(.10):.0f}  p25={pct(.25):.0f}  "
+      f"median={pct(.50):.0f}  p75={pct(.75):.0f}  max={vs[-1]:.0f}")
+
+if thresh > 0:
+    kept = 0
+    for f, v in vals:
+        if v >= thresh:
+            shutil.copy2(os.path.join(src, f), os.path.join(out, f)); kept += 1
+    print(f"threshold={thresh:.0f} -> kept {kept}, dropped {len(vals) - kept} -> {out}")
+else:
+    print("REPORT only (BLUR_THRESHOLD=0). Pick ~p10-p25 then re-run with BLUR_THRESHOLD=<n>.")
+PY
+}
+
+# Standalone sharpness filter / report on an existing faces folder (FACES_OUT).
+cmd_sharp() {
+  ensure_image
+  local src="$FACES_OUT" out="${SHARP_OUT:-${FACES_OUT}_sharp}"
+  [ -d "$FS_DIR/$src" ] || { err "FACES_OUT not found: $src (run extract first)"; exit 1; }
+  if [ "$BLUR_THRESHOLD" -gt 0 ]; then
+    log "Sharpness filter: $src -> $out (drop variance < $BLUR_THRESHOLD)"
+  else
+    log "Sharpness REPORT: $src (set BLUR_THRESHOLD=<n> to actually filter)"
+  fi
+  blur_filter "$src" "$out" "$BLUR_THRESHOLD"
+}
+
 cmd_shell() {
   ensure_image
   docker run --rm -it --platform "$PLATFORM" \
@@ -254,17 +341,19 @@ case "${1:-}" in
   build)   cmd_build ;;
   extract) cmd_extract "${@:2}" ;;
   dedupe)  cmd_dedupe ;;
+  sharp)   cmd_sharp ;;
   convert) cmd_convert ;;
   shell)   cmd_shell ;;
   *)
     cat <<EOF
-Usage: $0 {build|extract|dedupe|convert|shell}
+Usage: $0 {build|extract|dedupe|sharp|convert|shell}
 
   build    Build the CPU image once (bakes deps; runs are instant afterwards)
-  extract  Detect faces -> dedupe (default) -> fresh TIMESTAMPED folder under
-           REVIEW_DIR. You then curate it and MOVE the keepers where convert/
-           train needs. Disable dedupe for a run with: extract dedupe=false
+  extract  Best-quality detect (s3fd+hrnet+bisenet-fp) -> dedupe -> optional blur
+           filter -> fresh TIMESTAMPED folder under REVIEW_DIR. Curate it, then
+           MOVE keepers to workspace/<WS>/faces/. Disable dedupe: extract dedupe=false
   dedupe   Standalone: re-thin an existing FACES_OUT folder -> DEDUP_OUT
+  sharp    Report blur distribution of FACES_OUT (or filter if BLUR_THRESHOLD>0)
   convert  Apply trained MODEL_DIR onto INPUT -> OUTPUT (the face swap)
   shell    Open a bash shell inside the container (debugging)
 
@@ -280,16 +369,17 @@ explicitly to train multiple faces without collision:
   workspace/<WS>/model/    <- trained model (pull from cloud)
   workspace/<WS>/converted/<- convert output
 
-Extract flow: each run writes workspace/<WS>/review/<timestamp>/ (deduped). Review
-it, delete bad faces, then move the keepers into workspace/<WS>/faces/. Tune with
-DEDUP_THRESHOLD (0 = no dedupe), KEEP_RAW=1 to also keep pre-dedupe faces.
+Quality knobs (extract): DETECTOR=s3fd ALIGNER=hrnet MASKER=bisenet-fp
+EXTRACT_SIZE=512 EXTRACT_NORM=hist MIN_SIZE (skip tiny faces) EXTRACT_EVERY_N.
+Blur: run '$0 sharp' to see the distribution, then BLUR_THRESHOLD=<n> to drop blurry.
 
 Examples:
   INPUT=my1.mp4 $0 extract                  # WS=my1 -> workspace/my1/review/<ts>/
   WS=alice INPUT=alice.mp4 $0 extract       # all under workspace/alice/
-  WS=bob   INPUT=bob.mov   $0 extract       # separate identity, no collision
   INPUT=my1.mp4 $0 extract dedupe=false     # skip dedupe (keep all faces)
-  WS=alice DEDUP_THRESHOLD=4 INPUT=alice.mp4 $0 extract   # lighter dedupe
+  WS=alice MIN_SIZE=10 BLUR_THRESHOLD=100 INPUT=alice.mp4 $0 extract  # strict quality
+  FACES_OUT=workspace/alice/faces $0 sharp                  # report blur distribution
+  FACES_OUT=workspace/alice/faces BLUR_THRESHOLD=100 $0 sharp  # drop blurry
   WS=alice INPUT=alice.mp4 $0 convert       # uses workspace/alice/model + /converted
 EOF
     exit 1 ;;
