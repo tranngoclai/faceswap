@@ -106,7 +106,8 @@ Script `docker-faceswap.sh` ở repo root bọc extract/convert trong container:
 
 ```bash
 ./docker-faceswap.sh build      # build image faceswap-cpu:local 1 lần (bake deps)
-./docker-faceswap.sh extract    # detect faces + alignments
+./docker-faceswap.sh extract    # extract -> dedupe -> folder review có timestamp
+./docker-faceswap.sh dedupe     # (standalone) re-thin một folder faces có sẵn
 ./docker-faceswap.sh convert    # ghép mặt (cần MODEL_DIR pull từ cloud)
 ./docker-faceswap.sh shell      # bash shell trong container (debug)
 ```
@@ -114,18 +115,33 @@ Script `docker-faceswap.sh` ở repo root bọc extract/convert trong container:
 **Đặc điểm:**
 - Image bake sẵn deps → các lần chạy sau **tức thì** (không cài lại torch mỗi lần)
 - Volume `faceswap-fs-cache` giữ model weights của detector/aligner → lần 2 không tải lại
-- Cùng bộ biến config với `convert-faces.sh`: `INPUT`, `FACES_OUT`, `OUTPUT`, `MODEL_DIR`, `REF_DIR`, `REF_THRESHOLD`, `WRITER`, `COLOR_ADJ`, `MASK_TYPE`, `OUTPUT_SCALE`
+- Cùng bộ biến config với `convert-faces.sh`: `INPUT`, `OUTPUT`, `MODEL_DIR`, `REF_DIR`, `REF_THRESHOLD`, `WRITER`, `COLOR_ADJ`, `MASK_TYPE`, `OUTPUT_SCALE`
 - Hỗ trợ identity filter (`REF_DIR`) cho video nhiều mặt như mục 1b
 
+### Flow extract (review thủ công)
+
+`extract` chạy **extract → dedupe → folder review có timestamp** mỗi lần. Bạn duyệt folder đó (xoá mặt xấu), rồi **tự move** mặt đã duyệt sang folder mà convert/train cần. Các lần chạy **không ghi đè** nhau.
+
 ```bash
-# Ví dụ extract đã verify (804 frames -> 787 faces, ~40s CPU):
-INPUT=my1.mp4 FACES_OUT=workspace/faces_my1 ./docker-faceswap.sh extract
+INPUT=my1.mp4 ./docker-faceswap.sh extract
+# -> workspace/review/20260630-012304/  (197 faces, đã dedupe)
+#    Duyệt -> move sang faces_A (train) hoặc ALIGNED_DIR (convert)
+```
 
-# Extract chỉ 1 người (lọc theo folder reference đã duyệt):
-REF_DIR=workspace/ref_A FACES_OUT=workspace/faces_A ./docker-faceswap.sh extract
+| Biến | Mặc định | Tác dụng |
+|------|----------|----------|
+| `REVIEW_DIR` | `workspace/review` | Nơi chứa các folder review timestamp |
+| `DEDUP_THRESHOLD` | `6` | Mức lọc trùng (0 = tắt dedupe, giữ tất cả) — xem [mục 1d](#loc-anh-trung-dedupe) |
+| `KEEP_RAW` | `0` | `1` = giữ thêm faces raw trước dedupe (ở `<run>_raw`) |
+| `REF_DIR` | `workspace/ref_identity` | Lọc 1 nhân dạng (mục 1b) |
 
-# Convert sau khi pull model từ cloud:
-INPUT=my1.mp4 OUTPUT=workspace/out MODEL_DIR=workspace/model ./docker-faceswap.sh convert
+```bash
+# Giữ nhiều hơn (lọc nhẹ) + chỉ 1 người:
+INPUT=my1.mp4 DEDUP_THRESHOLD=4 REF_DIR=workspace/ref_A ./docker-faceswap.sh extract
+
+# Convert sau khi pull model từ cloud (đặt ALIGNED_DIR = folder đã duyệt):
+INPUT=my1.mp4 OUTPUT=workspace/out MODEL_DIR=workspace/model \
+  ALIGNED_DIR=workspace/faces_approved ./docker-faceswap.sh convert
 ```
 
 > **Phân vai:** extract/convert → Docker local (`docker-faceswap.sh`); **train → GPU vast.ai** (`setup-vast.sh`). Đừng train trên Intel Mac CPU — quá chậm.
@@ -136,10 +152,11 @@ INPUT=my1.mp4 OUTPUT=workspace/out MODEL_DIR=workspace/model ./docker-faceswap.s
 
 > **Vì sao cần:** mặt di chuyển chậm trong video → các frame liên tiếp cho ra mặt **gần như trùng khít**. Train trên data lặp = phình dung lượng, không thêm thông tin, dễ **overfit**.
 
-`docker-faceswap.sh dedupe` tính **dHash 64-bit** mỗi mặt, bỏ ảnh nào có khoảng cách Hamming `< DEDUP_THRESHOLD` so với **mọi ảnh đã giữ** (loại cả mặt lặp ở đoạn khác của video). PNG vẫn giữ metadata alignment → train được ngay.
+Thuật toán tính **dHash 64-bit** mỗi mặt, bỏ ảnh nào có khoảng cách Hamming `< DEDUP_THRESHOLD` so với **mọi ảnh đã giữ** (loại cả mặt lặp ở đoạn khác của video). PNG vẫn giữ metadata alignment → train được ngay.
+
+> **`extract` đã tự dedupe** (mục 1c) — không cần chạy riêng. Lệnh `dedupe` standalone chỉ dùng khi muốn **re-thin một folder faces có sẵn** ở threshold khác:
 
 ```bash
-# Sau extract: lọc trùng ở threshold 6 -> ghi ra <FACES_OUT>_dedup
 FACES_OUT=workspace/faces_my1 DEDUP_THRESHOLD=6 ./docker-faceswap.sh dedupe
 # -> workspace/faces_my1_dedup/
 ```
