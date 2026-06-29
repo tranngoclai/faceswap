@@ -1,314 +1,171 @@
 # Cloud Training trên vast.ai — Quy trình tổng hợp
 
-Hướng dẫn train model faceswap trên GPU thuê tại [vast.ai](https://cloud.vast.ai), kèm 2 script tự động ở repo root:
+Train faceswap trên GPU thuê tại [vast.ai](https://cloud.vast.ai). 3 script ở repo root:
 
-- **`setup-vast.sh`** — chạy trên instance cloud (install / check / train / board / sync / pull)
-- **`convert-faces.sh`** — chạy ở local có torch native (extract / convert)
-- **`docker-faceswap.sh`** — chạy ở local qua Docker (extract / convert) — **bắt buộc trên Intel Mac**
+| Script | Chạy ở đâu | Lệnh |
+|--------|-----------|------|
+| **`docker-faceswap.sh`** | Local qua Docker (**bắt buộc trên Intel Mac**) | build / extract / dedupe / convert / shell |
+| **`convert-faces.sh`** | Local có torch native (Apple Silicon / Linux) | extract / convert |
+| **`setup-vast.sh`** | Instance cloud | install / check / train / board / sync / pull |
 
-> **Backend:** bản faceswap này dùng **PyTorch 2.9 + Keras 3** (KHÔNG còn TensorFlow). Cần **NVIDIA GPU + CUDA**.
+> **Backend:** PyTorch 2.9 + Keras 3 (KHÔNG còn TensorFlow). Train cần **NVIDIA GPU + CUDA**.
+> **Phân vai:** extract/convert nhẹ → chạy **local**; train nặng → **vast.ai GPU**.
+
+```
+[LOCAL] extract+dedupe (A,B) ──upload──> [VAST.AI] train ──sync──> [Google Drive]
+[LOCAL] convert (ghép mặt) <─────────────────────────────── pull ──┘
+```
 
 ---
 
-## Tổng quan luồng
+## Lệnh chạy hoàn chỉnh (end-to-end)
 
-```
-[LOCAL]  extract faces (A,B) ──upload──> [VAST.AI]  train ──sync──> [Google Drive]
-                                                                          │ pull
-[LOCAL]  convert (ghép mặt) <───────────────────────────────────────────┘
+Ví dụ ghép mặt **alice → bob** (mỗi người 1 workspace riêng dưới `workspace/<WS>/`).
+
+```bash
+# === 0. LOCAL: build image Docker (1 lần duy nhất) ===
+cd ~/Projects/faceswap
+./docker-faceswap.sh build
+
+# === 1. LOCAL: ảnh tham chiếu + extract (lọc 1 người + dedupe tự động) ===
+mkdir -p workspace/alice/ref workspace/bob/ref
+#   bỏ 5-20 ảnh alice vào workspace/alice/ref/  (đa dạng góc/sáng)
+#   bỏ 5-20 ảnh bob   vào workspace/bob/ref/
+WS=alice INPUT=alice.mp4 ./docker-faceswap.sh extract   # -> workspace/alice/review/<ts>/
+WS=bob   INPUT=bob.mp4   ./docker-faceswap.sh extract   # -> workspace/bob/review/<ts>/
+
+# === 2. LOCAL: duyệt review -> gom data train -> nén upload ===
+mkdir -p workspace/alice/faces workspace/bob/faces
+mv workspace/alice/review/<ts>/*.png workspace/alice/faces/   # sau khi xoá mặt xấu
+mv workspace/bob/review/<ts>/*.png   workspace/bob/faces/
+tar czf faces.tar.gz workspace/alice/faces workspace/bob/faces
+
+# === 3. CLOUD (vast.ai, trong SSH/Jupyter terminal): train ===
+scp -P <PORT> setup-vast.sh faces.tar.gz root@<HOST>:~/
+REQ_FILE=requirements/requirements_nvidia_13.txt ./setup-vast.sh all   # -> CUDA available: True
+tar xzf faces.tar.gz -C ~/faceswap/
+tmux new -s fs
+FACES_A=workspace/alice/faces FACES_B=workspace/bob/faces \
+MODEL_DIR=workspace/alice/model TRAINER=phaze-a BATCH_SIZE=16 \
+SYNC_REMOTE="gdrive:faceswap-alice" ./setup-vast.sh train
+#   Ctrl+B rồi D để detach. Theo dõi loss: ./setup-vast.sh board  (port 6006)
+
+# === 4. LOCAL: pull model + convert (ghép mặt) ===
+SYNC_REMOTE="gdrive:faceswap-alice" MODEL_DIR=workspace/alice/model ./setup-vast.sh pull
+WS=alice INPUT=alice.mp4 ALIGNED_DIR=workspace/alice/faces ./docker-faceswap.sh convert
+#   -> kết quả ở workspace/alice/converted/
 ```
 
-| Bước | Chạy ở đâu | Vì sao |
-|------|-----------|--------|
-| Extract | Local (CPU) | Không tốn GPU thuê |
-| Train | vast.ai (GPU) | Việc nặng duy nhất cần GPU mạnh |
-| Convert | Local | Nhẹ GPU, không cần thuê |
+> Thay `<ts>` bằng tên folder timestamp thật script in ra (vd `20260630-012304`).
+> **Bản gọn nhất** (1 video, WS lấy từ tên file): bỏ `WS=...`, chạy `INPUT=my1.mp4 ./docker-faceswap.sh extract` → workspace `my1`.
 
 ---
 
-## 1. Chuẩn bị dữ liệu (LOCAL)
+## 1. Local: extract + dedupe (Docker)
 
-Train cần **faces đã extract sẵn** của 2 nhân dạng:
-- `workspace/faces_A` — nhân dạng A (mặt nguồn)
-- `workspace/faces_B` — nhân dạng B (mặt đích sẽ ghép lên)
+> **Vì sao Docker:** PyTorch đã **bỏ wheel macOS Intel (x86_64)**; faceswap cần `torchvision>=0.18` (không có wheel x86_64) → chạy trong **Linux CPU container** (native amd64 trên Intel, emulated trên Apple Silicon). *Apple Silicon / Linux có torch native → dùng `convert-faces.sh` trực tiếp, bỏ qua Docker.*
 
-```bash
-# Extract faces từ ảnh/video nguồn (lặp lại cho cả A và B)
-python faceswap.py extract -i <media_A> -o workspace/faces_A
-python faceswap.py extract -i <media_B> -o workspace/faces_B
-
-# Nén để upload
-tar czf faces.tar.gz workspace/faces_A workspace/faces_B
-```
-
-> **Ảnh/video có nhiều mặt?** Mặc định extract lấy TẤT CẢ mặt → data lẫn lộn nhiều người, train hỏng. Xem mục [Xử lý ảnh nhiều mặt](#xu-ly-anh-nhieu-mat-multi-face) bên dưới.
-
----
-
-## 1b. Xử lý ảnh nhiều mặt (multi-face) {#xu-ly-anh-nhieu-mat-multi-face}
-
-Mục tiêu: thư mục faces chỉ chứa **một nhân dạng**.
-
-### Cách làm: folder reference đã duyệt (khuyến nghị)
-
-Tạo một folder **đã duyệt thủ công, chỉ chứa duy nhất 1 khuôn mặt** của người cần lấy. Mỗi lần extract, faceswap dùng folder này làm **ảnh đối chiếu** (positive filter `-f`) → chỉ giữ đúng người đó, bỏ qua mọi mặt khác trong khung hình.
-
-```
-workspace/
-├── ref_identity/        # FOLDER ĐÃ DUYỆT: 3-10 ảnh, DUY NHẤT 1 người,
-│                        #   đa dạng góc mặt + ánh sáng. Curate 1 lần, tái dùng.
-├── faces_A/             # output extract (đã được lọc theo ref_identity)
-└── src.mp4
-```
-
-`convert-faces.sh` đã tích hợp folder này qua biến `REF_DIR`:
-
-```bash
-# Build training data: chỉ extract đúng 1 người dựa trên folder reference
-FACES_OUT=workspace/faces_A REF_DIR=workspace/ref_A REF_THRESHOLD=0.6 \
-  ./convert-faces.sh extract
-```
-
-Hoặc gọi trực tiếp faceswap:
-```bash
-python faceswap.py extract -i <media> -o workspace/faces_A \
-  -f workspace/ref_A/ -l 0.6
-```
-
-| Flag | Biến script | Tác dụng |
-|------|-------------|----------|
-| `-f` / `--filter` | `REF_DIR` | Chỉ giữ người trong folder reference |
-| `-l` / `--ref_threshold` | `REF_THRESHOLD` | Ngưỡng nhận diện (mặc định `0.60`; cao = chặt hơn) |
-| `-n` / `--nfilter` | — | (ngược lại) loại bỏ người không muốn |
-
-> Để trống/không có `REF_DIR` → extract lấy TẤT CẢ mặt (hành vi cũ).
-
-### Cách thay thế: dọn tay sau extract
-
-```bash
-python tools.py sort -i workspace/faces_A -o workspace/faces_A_sorted -s face
-# -> nhóm theo nhân dạng, mở folder xoá tay mặt thừa
-```
-
-### Lưu ý convert
-
-Convert cũng swap MỌI mặt khớp trong frame. Đặt cùng `REF_DIR` → chỉ ghép đúng 1 người (script tự thêm `-f` ở bước convert).
-
----
-
-## 1c. Extract/Convert trên macOS qua Docker (Intel Mac) {#extract-convert-macos-docker}
-
-> **Vì sao cần Docker:** PyTorch đã **bỏ build wheel cho macOS Intel (x86_64)**. faceswap cần `torchvision>=0.18`, mà bản này **không có wheel macOS x86_64 nào** → extract/convert **không chạy native được** trên Intel Mac. Giải pháp: chạy trong **Linux CPU container** (native amd64 trên Intel Mac, emulated trên Apple Silicon).
->
-> Apple Silicon (M1–M4) có thể chạy native bằng `requirements_apple-silicon.txt` (torch MPS) — không cần Docker.
-
-Script `docker-faceswap.sh` ở repo root bọc extract/convert trong container:
-
-```bash
-./docker-faceswap.sh build      # build image faceswap-cpu:local 1 lần (bake deps)
-./docker-faceswap.sh extract    # extract -> dedupe -> folder review có timestamp
-./docker-faceswap.sh dedupe     # (standalone) re-thin một folder faces có sẵn
-./docker-faceswap.sh convert    # ghép mặt (cần MODEL_DIR pull từ cloud)
-./docker-faceswap.sh shell      # bash shell trong container (debug)
-```
-
-**Đặc điểm:**
-- Image bake sẵn deps → các lần chạy sau **tức thì** (không cài lại torch mỗi lần)
-- Volume `faceswap-fs-cache` giữ model weights của detector/aligner → lần 2 không tải lại
-- Cùng bộ biến config với `convert-faces.sh`: `INPUT`, `OUTPUT`, `MODEL_DIR`, `REF_DIR`, `REF_THRESHOLD`, `WRITER`, `COLOR_ADJ`, `MASK_TYPE`, `OUTPUT_SCALE`
-- Hỗ trợ identity filter (`REF_DIR`) cho video nhiều mặt như mục 1b
-
-### Workspace theo nhân dạng (train nhiều mặt)
-
-Mỗi người là **một workspace riêng** dưới `workspace/<WS>/`. Tham số `WS` (workspace name) — nếu **không truyền** thì lấy **tên file input** (`my1.mp4` → `my1`). Train nhiều mặt thì đặt `WS` rõ ràng để **không đụng nhau**.
+**Workspace theo nhân dạng** — tham số `WS` gom mọi artifact dưới `workspace/<WS>/`. Không truyền `WS` thì lấy **tên file input** (`my1.mp4` → `my1`). Train nhiều mặt thì đặt `WS` rõ ràng để không đụng nhau.
 
 ```
 workspace/<WS>/
-├── ref/         # ảnh tham chiếu (1 nhân dạng) — bạn bỏ vào đây
-├── review/      # các lần extract+dedupe có timestamp (duyệt ở đây)
-│   └── 20260630-012304/   (197 faces)
+├── ref/         # ẢNH THAM CHIẾU (1 nhân dạng) — bạn bỏ vào đây
+├── review/      # extract+dedupe ra đây (folder timestamp, bạn duyệt)
 ├── faces/       # move mặt đã duyệt vào đây (data train / ALIGNED_DIR)
 ├── model/       # model train xong (pull từ cloud)
 └── converted/   # output convert
 ```
 
-### Flow extract (review thủ công)
-
-`extract` chạy **extract → dedupe → folder review có timestamp** mỗi lần. Bạn duyệt folder đó (xoá mặt xấu), rồi **tự move** mặt đã duyệt sang `workspace/<WS>/faces/`. Các lần chạy **không ghi đè** nhau.
+`extract` chạy **detect → dedupe → folder review có timestamp** mỗi lần (không ghi đè). Bạn duyệt, xoá mặt xấu, rồi move sang `workspace/<WS>/faces/`.
 
 ```bash
-INPUT=my1.mp4 ./docker-faceswap.sh extract
-# WS=my1 (lấy từ tên input) -> workspace/my1/review/20260630-012304/ (197 faces)
-
-WS=alice INPUT=alice.mp4 ./docker-faceswap.sh extract   # -> workspace/alice/...
-WS=bob   INPUT=bob.mov   ./docker-faceswap.sh extract   # -> workspace/bob/...  (tách biệt)
-
-INPUT=my1.mp4 ./docker-faceswap.sh extract dedupe=false  # giữ TẤT CẢ faces (787)
+WS=alice INPUT=alice.mp4 ./docker-faceswap.sh extract           # mặc định: lọc ref + dedupe
+WS=alice INPUT=alice.mp4 DEDUP_THRESHOLD=4 ./docker-faceswap.sh extract   # giữ nhiều hơn
+INPUT=my1.mp4 ./docker-faceswap.sh extract dedupe=false         # giữ TẤT CẢ faces
 ```
-
-> **Mặc định extract đã kèm dedupe.** Tắt cho 1 lần chạy bằng flag `dedupe=false` (hoặc `DEDUP_THRESHOLD=0`).
 
 | Biến | Mặc định | Tác dụng |
 |------|----------|----------|
 | `WS` | tên file input | Workspace name → mọi path dưới `workspace/<WS>/` |
-| `REF_DIR` | `workspace/<WS>/ref` | Ảnh tham chiếu, lọc 1 nhân dạng (mục 1b) |
-| `DEDUP_THRESHOLD` | `6` | Mức lọc trùng (0 = tắt dedupe, giữ tất cả) — xem [mục 1d](#loc-anh-trung-dedupe) |
-| `KEEP_RAW` | `0` | `1` = giữ thêm faces raw trước dedupe (ở `<run>_raw`) |
-| `MODEL_DIR` | `workspace/<WS>/model` | Model dir (pull từ cloud) |
-| `OUTPUT` | `workspace/<WS>/converted` | Output convert |
+| `REF_DIR` | `workspace/<WS>/ref` | Ảnh tham chiếu — chỉ giữ 1 nhân dạng (xem dưới) |
+| `REF_THRESHOLD` | `0.60` | Ngưỡng khớp mặt (cao = chặt hơn) |
+| `DEDUP_THRESHOLD` | `6` | Mức lọc trùng (0 hoặc `dedupe=false` = tắt) |
+| `KEEP_RAW` | `0` | `1` = giữ thêm faces raw trước dedupe |
 
-```bash
-# Giữ nhiều hơn (lọc nhẹ) — ảnh tham chiếu đặt sẵn ở workspace/alice/ref/:
-WS=alice INPUT=alice.mp4 DEDUP_THRESHOLD=4 ./docker-faceswap.sh extract
+### Lọc nhiều mặt: folder `ref/`
 
-# Convert: tự dùng workspace/alice/model + workspace/alice/converted
-WS=alice INPUT=alice.mp4 ALIGNED_DIR=workspace/alice/faces ./docker-faceswap.sh convert
-```
+Frame có nhiều mặt → nếu không lọc, data lẫn nhiều người, train hỏng. Bỏ **3–20 ảnh đã duyệt, DUY NHẤT 1 người** (đa dạng góc/sáng) vào `workspace/<WS>/ref/`. Script tự thêm filter `-f`/`-l` → chỉ giữ người đó. Để trống `ref/` = lấy TẤT CẢ mặt.
 
-> **Phân vai:** extract/convert → Docker local (`docker-faceswap.sh`); **train → GPU vast.ai** (`setup-vast.sh`). Đừng train trên Intel Mac CPU — quá chậm.
+> Nhiều ảnh ref **không tốt hơn**: chỉ tăng thời gian khởi động + dễ false-positive. Muốn chặt hơn → tăng `REF_THRESHOLD`, đừng thêm ảnh.
 
----
+### Lọc ảnh trùng (dedupe)
 
-## 1d. Lọc ảnh trùng (dedupe) {#loc-anh-trung-dedupe}
+Mặt di chuyển chậm → frame liên tiếp gần trùng khít → train phình data, dễ overfit. Thuật toán **dHash 64-bit** bỏ ảnh có Hamming `< DEDUP_THRESHOLD` so với mọi ảnh đã giữ. PNG vẫn giữ metadata alignment → train được ngay. Đã chạy tự động trong `extract`.
 
-> **Vì sao cần:** mặt di chuyển chậm trong video → các frame liên tiếp cho ra mặt **gần như trùng khít**. Train trên data lặp = phình dung lượng, không thêm thông tin, dễ **overfit**.
-
-Thuật toán tính **dHash 64-bit** mỗi mặt, bỏ ảnh nào có khoảng cách Hamming `< DEDUP_THRESHOLD` so với **mọi ảnh đã giữ** (loại cả mặt lặp ở đoạn khác của video). PNG vẫn giữ metadata alignment → train được ngay.
-
-> **`extract` đã tự dedupe** (mục 1c) — không cần chạy riêng. Lệnh `dedupe` standalone chỉ dùng khi muốn **re-thin một folder faces có sẵn** ở threshold khác:
-
-```bash
-FACES_OUT=workspace/faces_my1 DEDUP_THRESHOLD=6 ./docker-faceswap.sh dedupe
-# -> workspace/faces_my1_dedup/
-```
-
-**Chọn threshold** (số bit; cao = bỏ nhiều hơn). Ví dụ thực tế trên 787 faces:
-
-| Threshold | Giữ lại | Mức lọc |
-|-----------|---------|---------|
-| 2 | 539 | nhẹ (chỉ bỏ gần khít) |
+| Threshold | Giữ lại (trên 787 faces) | Mức lọc |
+|-----------|--------------------------|---------|
 | 4 | 319 | vừa |
 | **6** | **197** | **khuyến nghị** (cân bằng) |
 | 8 | 137 | mạnh |
 | 12 | 68 | rất mạnh (dễ mất pose hữu ích) |
 
-> **Khuyến nghị train:** threshold **4–6** — bỏ frame slow-motion trùng nhưng **vẫn giữ đa dạng** góc/biểu cảm. Đừng ép quá mạnh (train cần variety). Lý tưởng: gộp nhiều clip nguồn rồi mới dedupe.
->
-> **Thay thế (faceswap native):** `tools.py sort -g hist -t 0.2` gom mặt giống vào bin numbered để thưa tay — xem [mục 1b](#xu-ly-anh-nhieu-mat-multi-face) về `tools.py sort`.
+> Khuyến nghị train: threshold **4–6** (giữ đa dạng góc/biểu cảm). Re-thin folder có sẵn: `FACES_OUT=<dir> DEDUP_THRESHOLD=6 ./docker-faceswap.sh dedupe`.
+> Thay thế native: `python tools.py sort -g hist -t 0.2` (gom bin để thưa tay).
 
 ---
 
-## 2. Thuê instance trên vast.ai
+## 2. vast.ai: thuê instance + train
 
 | Mục | Khuyến nghị |
 |-----|-------------|
 | **GPU** | RTX 3090 / 4090 / A5000 (24GB). Tối thiểu RTX 3060 12GB |
-| **Image** | `vastai/base-image` tag **CUDA 12.8** — **KHÔNG dùng `vastai/tensorflow`** |
+| **Image** | `vastai/base-image` CUDA **12.8** — **KHÔNG dùng `vastai/tensorflow`** (project chạy PyTorch, TF gây xung đột CUDA) |
 | **Disk** | ≥ 40–60GB |
 | **Ports** | 6006 (TensorBoard), 8080 (Jupyter nếu template có) |
-
-**Tại sao base-image, không phải tensorflow image:** project chạy PyTorch, nên TF preinstall là vô dụng và còn dễ gây xung đột CUDA/cuDNN với torch. `base-image` sạch, để script tự cài torch đúng version.
 
 **Khớp CUDA ↔ requirements:**
 
 | Image CUDA | `REQ_FILE` |
 |-----------|-----------|
-| 12.6.x | `requirements/requirements_nvidia_12.txt` (torch cu126) |
-| 12.8 / 13.0 | `requirements/requirements_nvidia_13.txt` (torch cu130) |
+| 12.6.x | `requirements/requirements_nvidia_12.txt` (cu126) |
+| 12.8 / 13.0 | `requirements/requirements_nvidia_13.txt` (cu130) |
 
-> Có template **PyTorch sẵn** (`pytorch/pytorch:2.9-cuda12.8-cudnn9-runtime`)? Dùng `SKIP_TORCH=1` để giữ torch của image.
+> Template **PyTorch sẵn** (`pytorch/pytorch:2.9-cuda12.8-cudnn9-runtime`)? Dùng `SKIP_TORCH=1` giữ torch của image.
+> **Jupyter** không bắt buộc (train qua CLI). **Không** train trong notebook cell (chết khi mất kết nối) — luôn `tmux`.
 
-**Jupyter:** không bắt buộc (train chạy qua CLI). Nếu template có sẵn thì giữ — tiện upload faces và xem ảnh preview. **Không** chạy train trong notebook cell (cell chết khi mất kết nối) — luôn dùng `tmux`.
-
----
-
-## 3. Setup + train trên instance (qua SSH / Jupyter terminal)
-
-```bash
-# Upload script + faces lên instance (scp / rsync / rclone / Jupyter upload)
-scp -P <PORT> setup-vast.sh root@<HOST>:~/
-
-# Cài đặt + kiểm tra GPU
-REQ_FILE=requirements/requirements_nvidia_13.txt ./setup-vast.sh all
-# -> phải thấy "CUDA available: True" trước khi train
-
-# Giải nén faces vào đúng chỗ
-tar xzf faces.tar.gz -C ~/faceswap/
-
-# Train trong tmux (sống sót khi mất SSH) + auto-sync lên Google Drive
-tmux new -s fs
-SYNC_REMOTE="gdrive:faceswap-model" ./setup-vast.sh train
-# Ctrl+B rồi D để detach. Gắn lại: tmux attach -t fs
-```
-
-**Tinh chỉnh** qua env var:
+Lệnh train (xem block end-to-end mục trên). Tinh chỉnh:
 ```bash
 TRAINER=villain BATCH_SIZE=8 ./setup-vast.sh train   # giảm batch nếu CUDA OOM
+./setup-vast.sh board                                # TensorBoard 0.0.0.0:6006
 ```
-
-Các flag headless mà script dùng sẵn: `-w` (ghi preview ra file, không mở GUI), `-s` (save model), `-I` (snapshot backup). Logs TensorBoard **bật mặc định**.
+Script dùng sẵn flag headless `-w` (preview ra file), `-s` (save), `-I` (snapshot). Logs TensorBoard bật mặc định.
 
 ---
 
-## 4. Theo dõi training
+## 3. Auto-sync Google Drive (rclone)
 
+**Config 1 lần** — trên LOCAL (có browser) lấy token, trên INSTANCE paste vào:
 ```bash
-# Terminal khác trên instance
-./setup-vast.sh board          # TensorBoard 0.0.0.0:6006
-```
-Mở `http://<HOST>:<port-map-cho-6006>` để xem loss giảm theo thời gian.
-
----
-
-## 5. Auto-sync lên Google Drive
-
-### Config rclone (một lần)
-
-**Trên LOCAL** (có browser):
-```bash
-brew install rclone
-rclone authorize "drive"        # đăng nhập Google -> copy token JSON in ra
-```
-
-**Trên INSTANCE**:
-```bash
+# LOCAL
+rclone authorize "drive"        # đăng nhập Google -> copy token JSON
+# INSTANCE
 curl https://rclone.org/install.sh | bash
-rclone config create gdrive drive config_is_local=false \
-  token='{"access_token":"...","refresh_token":"...","expiry":"..."}'
-rclone mkdir gdrive:faceswap-model
-rclone lsd gdrive:              # test -> liệt kê được là OK
+rclone config create gdrive drive config_is_local=false token='{...token...}'
+rclone mkdir gdrive:faceswap-alice && rclone lsd gdrive:   # test
 ```
 
-### 3 lớp bảo vệ tiến độ (đã tích hợp trong script)
+**3 lớp bảo vệ tiến độ** (tích hợp trong `setup-vast.sh train`):
+1. **Định kỳ** — sync mỗi `SYNC_INTERVAL`s (mặc định 1800 = 30 phút)
+2. **Khi thoát** — `trap EXIT/INT/TERM` sync lần cuối khi train dừng / Ctrl+C / stop
+3. **Thủ công** — `./setup-vast.sh sync`
 
-1. **Định kỳ** — sync mỗi `SYNC_INTERVAL` giây (mặc định 1800 = 30 phút)
-2. **Khi thoát** — `trap EXIT/INT/TERM` chạy sync lần cuối khi train dừng / Ctrl+C / instance nhận tín hiệu stop
-3. **Thủ công** — `./setup-vast.sh sync` đẩy ngay bất cứ lúc nào
-
-```bash
-# Giảm rủi ro mất tiến độ nếu instance hay bị kill cứng:
-SYNC_REMOTE="gdrive:faceswap-model" SYNC_INTERVAL=600 ./setup-vast.sh train
-```
-
-> Lưu ý: kill cứng (SIGKILL/mất điện) thì `trap` không chạy — lúc đó lớp sync định kỳ là phương án dự phòng.
+> Giảm rủi ro: `SYNC_INTERVAL=600`. Kill cứng (SIGKILL/mất điện) thì `trap` không chạy → lớp định kỳ là dự phòng.
 
 ---
 
-## 6. Convert — ghép mặt (LOCAL)
+## 4. Convert — tham số chất lượng
 
-```bash
-# Kéo model đã train từ Drive về local
-SYNC_REMOTE="gdrive:faceswap-model" MODEL_DIR=workspace/model ./setup-vast.sh pull
-
-# (Tùy chọn) extract faces + alignments cho video NGUỒN cần ghép
-INPUT=workspace/src.mp4 ./convert-faces.sh extract
-
-# Ghép mặt -> xuất kết quả
-INPUT=workspace/src.mp4 OUTPUT=workspace/converted MODEL_DIR=workspace/model \
-  ./convert-faces.sh convert
-```
-
-**Tham số chất lượng convert:**
+`convert` áp model lên video nguồn → output. Cần **alignments của video nguồn** (faceswap tự dò cạnh input nếu để trống `ALIGNMENTS`). Frame nhiều mặt → đặt cùng `WS`/`REF_DIR` để chỉ ghép 1 người.
 
 | Biến | Giá trị | Tác dụng |
 |------|---------|----------|
@@ -316,56 +173,31 @@ INPUT=workspace/src.mp4 OUTPUT=workspace/converted MODEL_DIR=workspace/model \
 | `COLOR_ADJ` | `avg-color`, `color-transfer`, `match-hist`, `seamless-clone`, `none` | Khớp màu mặt với nền |
 | `MASK_TYPE` | `extended`, `components`, `none`... | Vùng mặt ghép |
 | `OUTPUT_SCALE` | `100` | % kích thước so với gốc |
-
-> Convert cần **alignments của video nguồn** (không phải data train). Để trống `ALIGNMENTS` thì faceswap tự dò file cạnh input.
->
-> **Frame nhiều mặt?** Đặt `REF_DIR=workspace/ref_A` khi convert → chỉ ghép đúng 1 người (xem mục [Xử lý ảnh nhiều mặt](#xu-ly-anh-nhieu-mat-multi-face)).
+| `ALIGNED_DIR` | — | Folder faces đã duyệt để giới hạn mặt được ghép |
 
 ---
 
 ## Tham chiếu lệnh nhanh
 
-### `setup-vast.sh` (cloud)
-| Lệnh | Tác dụng |
-|------|----------|
-| `install` | Clone repo + pip install deps |
-| `check` | Xác nhận torch thấy GPU |
-| `train` | Train headless (chạy trong tmux) |
-| `board` | TensorBoard port 6006 |
-| `sync` | Đẩy model → remote (thủ công) |
-| `pull` | Kéo model từ remote → local |
-| `all` | install + check |
+**`docker-faceswap.sh`** (local): `build` | `extract` (detect→dedupe→review timestamp) | `dedupe` (re-thin folder) | `convert` | `shell`. Biến chính: `WS`, `REF_DIR`, `DEDUP_THRESHOLD`, `MODEL_DIR`, `ALIGNED_DIR`.
 
-### `convert-faces.sh` / `docker-faceswap.sh` (local)
-| Lệnh | Tác dụng |
-|------|----------|
-| `extract` | Detect faces + tạo alignments cho input (lọc 1 người nếu set `REF_DIR`) |
-| `dedupe` | (Docker) Bỏ ảnh trùng từ `FACES_OUT` → `*_dedup` (xem [mục 1d](#loc-anh-trung-dedupe)) |
-| `convert` | Áp model đã train lên input → output (lọc 1 người nếu set `REF_DIR`) |
-| `build` | (Docker) build image `faceswap-cpu:local` 1 lần |
-| `shell` | (Docker) bash shell trong container để debug |
-
-Biến quan trọng: `REF_DIR` (folder reference 1 mặt đã duyệt), `REF_THRESHOLD` (0.60), `FACES_OUT` (thư mục output extract).
-
-> **Intel Mac:** dùng `docker-faceswap.sh` (native torch không có wheel x86_64 macOS — xem [mục 1c](#extract-convert-macos-docker)). Apple Silicon / Linux: dùng `convert-faces.sh` trực tiếp.
+**`setup-vast.sh`** (cloud): `install` | `check` | `train` | `board` | `sync` | `pull` | `all`. Biến chính: `REQ_FILE`, `FACES_A/B`, `MODEL_DIR`, `TRAINER`, `BATCH_SIZE`, `SYNC_REMOTE`.
 
 ---
 
-## Checklist nhanh
+## Checklist
 
-- [ ] Extract faces A & B ở local
-- [ ] (Intel Mac) Dùng `docker-faceswap.sh`; lọc trùng bằng `dedupe` nếu nguồn là video
-- [ ] Thuê instance `vastai/base-image` CUDA 12.8 (KHÔNG dùng TF image)
-- [ ] `./setup-vast.sh all` → thấy `CUDA available: True`
-- [ ] Upload + giải nén faces
-- [ ] Config rclone gdrive
-- [ ] Train trong `tmux` với `SYNC_REMOTE` đã set
-- [ ] Theo dõi loss qua TensorBoard
-- [ ] `pull` model về local → `convert` ghép mặt
+- [ ] `./docker-faceswap.sh build` (1 lần)
+- [ ] Bỏ ảnh tham chiếu vào `workspace/<WS>/ref/`
+- [ ] `extract` mỗi nhân dạng → duyệt review → move sang `faces/`
+- [ ] Thuê instance `vastai/base-image` CUDA 12.8 → `./setup-vast.sh all` thấy `CUDA available: True`
+- [ ] Upload faces + config rclone gdrive
+- [ ] `train` trong `tmux` với `SYNC_REMOTE`; theo dõi loss qua TensorBoard
+- [ ] `pull` model về local → `convert`
 
 ---
 
 ## Câu hỏi chưa giải quyết
 
-- Chưa chốt GPU/model cụ thể → batch size đề xuất (16) mang tính khởi điểm, cần điều chỉnh theo VRAM thực tế (giảm xuống 8/4 nếu OOM).
-- Chưa xác định nguồn dữ liệu (ảnh/video) → bước extract có thể cần thêm flag tùy chất lượng nguồn.
+- Batch size 16 là khởi điểm — điều chỉnh theo VRAM thực tế (8/4 nếu OOM).
+- Bước extract có thể cần thêm flag tùy chất lượng nguồn (ảnh/video).
