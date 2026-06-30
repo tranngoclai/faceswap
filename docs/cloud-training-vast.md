@@ -165,6 +165,8 @@ TRAINER=villain BATCH_SIZE=8 ./setup-vast.sh train   # giảm batch nếu CUDA O
 ```
 Script dùng sẵn flag headless `-w` (preview ra file), `-s` (save), `-I` (snapshot). Logs TensorBoard bật mặc định.
 
+> **Preview nằm trong data dir:** `install` tự vá `scripts/train.py` để ghi `training_preview.png` vào **thư mục model** (`MODEL_DIR`, vd `/workspace/train/model`) thay vì cạnh `faceswap.py`. Nhờ vậy preview + model đều nằm dưới `/workspace` → **tận dụng được Cloud Sync (Google Drive) của vast.ai console** (sync cả `/workspace`), khỏi cần rclone. Muốn auto-sync bằng rclone thì vẫn dùng `SYNC_REMOTE` (mục 3).
+
 ---
 
 ## 3. Auto-sync Google Drive (rclone)
@@ -185,6 +187,39 @@ rclone mkdir gdrive:faceswap-alice && rclone lsd gdrive:   # test
 3. **Thủ công** — `./setup-vast.sh sync`
 
 > Giảm rủi ro: `SYNC_INTERVAL=600`. Kill cứng (SIGKILL/mất điện) thì `trap` không chạy → lớp định kỳ là dự phòng.
+
+### 3b. Auto-sync bằng vast.ai Cloud Copy (không cần rclone)
+
+Tận dụng **cloud connection** sẵn trong vast.ai console (Settings → Cloud connections, vd Google Drive) → cron **trên instance** tự gọi API đẩy `/workspace` lên Drive. Độc lập máy local.
+
+```bash
+# 1) LOCAL: đẩy API key lên instance (cron cần để gọi vast API)
+scp ~/.config/vastai/vast_api_key root@<HOST>:~/.config/vastai/vast_api_key
+vastai show connections        # lấy CONNECTION_ID (cloud_type=drive)
+
+# 2) INSTANCE: cài cron auto cloud-copy (mỗi 10 phút) — key qua env, KHÔNG ghi file key
+VAST_API_KEY=<scoped> CC_INSTANCE_ID=<id> CC_CONNECTION_ID=<conn> \
+SYNC_SRC=/workspace/train CC_DST=/faceswap-train ./setup-vast.sh cloudsync
+#   -> /root/cloud-sync.sh + crontab (dòng VAST_API_KEY + */10); log: /root/cloud-sync.log
+```
+
+**Bước 0 (khuyến nghị) — tạo API key quyền tối thiểu trước khi train.** Chạy LOCAL (cần admin key đã `vastai set api-key`):
+
+```bash
+VAST_API_KEY=$(./create-cloudcopy-key.sh)   # scoped key (chỉ cloud-copy) -> dùng cho cloudsync
+./create-cloudcopy-key.sh --set-env-var      # + set vast ACCOUNT env-var (auto-inject instance mới)
+```
+
+Permission tối thiểu (đã kiểm chứng): `instance_write → api.commands.rclone → POST` (route cloud-copy là `/api/v0/commands/rclone/`). Key này lộ cũng **không destroy instance / tiêu credit** được.
+
+**Auth qua env var, không file key:** vastai đọc key theo thứ tự `--api-key` → **`VAST_API_KEY`** → file `~/.config/vastai/vast_api_key`. `cloudsync` ghi `VAST_API_KEY` vào **header crontab** (cron có env tối giản nên job mới thấy được); set thêm **account env-var** để instance mới tự có.
+
+> ⚠️ Lưu ý:
+> - Tạo key con phải dùng **admin/primary key** (key trình duyệt lưu sẵn → `401 not authorized to create ... with these permissions`).
+> - `vastai create api-key --raw` in **không phải JSON** → script gọi REST bằng curl.
+> - Endpoint đúng là `api.commands.rclone` (không phải `api.instance.cloud-copy` → 401).
+> - **PATH cho cron:** vastai pre-install ở `/opt/instance-tools/bin` (KHÔNG ở venv) → `cloud-sync.sh` phải set PATH gồm path này, nếu không cron báo `vastai: command not found`.
+> - Gỡ cron khi xong: `crontab -l | grep -v cloud-sync.sh | crontab -`.
 
 ---
 
@@ -219,6 +254,21 @@ rclone mkdir gdrive:faceswap-alice && rclone lsd gdrive:   # test
 - [ ] Upload faces + config rclone gdrive
 - [ ] `train` trong `tmux` với `SYNC_REMOTE`; theo dõi loss qua TensorBoard
 - [ ] `pull` model về local → `convert`
+
+---
+
+## Lỗi thường gặp (Troubleshooting)
+
+| Triệu chứng | Nguyên nhân | Cách xử lý |
+|-------------|-------------|-----------|
+| Load ảnh lỗi `value: <class 'list'> field: NDArray` (mọi faces) | **numpy 2.5** đổi nội bộ `numpy.typing.NDArray` → vỡ deserializer alignment (`lib/align/objects.py`) | Đã **cap `numpy<2.5`** trong `_requirements_base.txt`. Instance cũ: `pip install "numpy>=2.4,<2.5"` rồi train lại |
+| Lỗi tương tự nhưng **chỉ 1 phía** A *hoặc* B, numpy đã đúng | Faces extract bằng **faceswap bản cũ** → metadata alignment lệch schema | Re-extract chính folder faces đó: `python faceswap.py extract -i <faces_dir> -o <out_dir> -D s3fd -A fan` rồi trỏ `FACES_A/B` sang `<out_dir>` |
+| Treo ở prompt `select the required backend` / `ModuleNotFoundError: No module named 'tensorflow'` | Chưa chọn backend → Keras 3 mặc định nhánh TensorFlow | `setup-vast.sh` đã tự `export FACESWAP_BACKEND=nvidia` + `KERAS_BACKEND=torch`. Chạy `faceswap.py` tay thì export 2 biến này trước |
+| `ERROR Side B contains fewer than 25 images` (train thoát ngay) | faceswap **bắt buộc ≥ 25 faces/phía** | Extract thêm faces từ video nguồn (bỏ/giảm dedupe): `python faceswap.py extract -i <video> -o <faces_dir> -D s3fd -A fan` |
+| `WARNING Side X contains fewer than 250 images` | Quá ít faces → model kém (không chặn train) | Nhắm **500–5000 faces/phía**; thêm video/giảm dedupe |
+| `python: command not found` trên instance | Image chỉ có `python3`, chưa activate venv | `setup-vast.sh` tự fallback `python3`. Hoặc `source /venv/main/bin/activate` (vast base-image) |
+
+> CUDA 13.0 base-image hoạt động tốt với `requirements_nvidia_13.txt` (torch cu130). Đặt biến môi trường backend **trước** mọi lệnh `faceswap.py` chạy headless.
 
 ---
 
