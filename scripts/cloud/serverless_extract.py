@@ -78,10 +78,20 @@ deployment.configure_autoscaling(
 )
 
 
-async def _run(cmd: str) -> str:
-    """Run a shell command, stream nothing, raise with output on failure."""
+async def _run(cmd: str, stream: bool = False) -> str:
+    """Run a shell command, raise with output on failure.
+
+    stream=False (default): capture combined stdout/stderr and return it (used
+    for short commands whose output we parse or tail).
+    stream=True: inherit the parent's stdout/stderr so long-running output (e.g.
+    faceswap's per-frame progress) shows live in the worker container log
+    (`vastai logs <instance>`); returns "" since nothing is captured.
+    """
+    pipe = None if stream else asyncio.subprocess.PIPE
     proc = await asyncio.create_subprocess_shell(
-        cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+        cmd,
+        stdout=pipe,
+        stderr=None if stream else asyncio.subprocess.STDOUT,
     )
     out, _ = await proc.communicate()
     text = (out or b"").decode("utf-8", "replace")
@@ -102,18 +112,49 @@ async def _instance_status(instance_id: str) -> str:
     return str(payload.get("status_msg") or "").strip()
 
 
-async def _wait_for_input(path: str, timeout: int, poll_interval: float) -> None:
-    """Wait until a downloaded file/dir exists and its measured size is stable."""
+# Vast cloud copy is async: CLI posts to API and returns immediately; their
+# infrastructure starts rclone on the instance (typically 2-5 min startup delay).
+# status_msg is used ONLY for failure detection — it's unreliable for success
+# (stale "complete" from prior copies causes false positives).
+# File existence on disk is the authoritative success signal.
+_COPY_FAIL_MARKERS = ("failed", "cancelled", "canceled")
+
+
+async def _wait_for_download(
+    instance_id: str,
+    path: str,
+    timeout: int,
+    poll_interval: float,
+) -> None:
+    """Wait for a Cloud-to-Instance copy to land on disk.
+
+    Uses status_msg only for failure detection (fast fail). Success is determined
+    by file/dir existence and stable size — not by status_msg — because Vast's
+    status can be stale from prior operations.
+    Progress is logged every 30s so the worker log shows the job is alive.
+    """
     deadline = time.monotonic() + timeout
+    start = time.monotonic()
     previous_size = None
     stable_polls = 0
+    appeared = False
+    last_log = start
+    name = os.path.basename(path)
     while time.monotonic() < deadline:
+        now = time.monotonic()
+        if now - last_log >= 30:
+            print(f"[sl] waiting for {name} ... ({int(now - start)}s)", flush=True)
+            last_log = now
+        status = await _instance_status(instance_id)
+        if any(m in status.lower() for m in _COPY_FAIL_MARKERS):
+            raise RuntimeError(f"cloud copy failed: {status}")
         if os.path.exists(path):
+            appeared = True
             if os.path.isdir(path):
                 size = sum(
-                    os.path.getsize(os.path.join(root, name))
+                    os.path.getsize(os.path.join(root, f))
                     for root, _, files in os.walk(path)
-                    for name in files
+                    for f in files
                 )
             else:
                 size = os.path.getsize(path)
@@ -122,32 +163,48 @@ async def _wait_for_input(path: str, timeout: int, poll_interval: float) -> None
             if size > 0 and stable_polls >= 2:
                 return
         await asyncio.sleep(poll_interval)
-    raise TimeoutError(f"cloud download did not stabilize within {timeout}s: {path}")
+    msg = (
+        f"download timed out after {timeout}s — '{name}' never arrived. "
+        "Check Drive path (no leading slash) and connection id."
+        if not appeared
+        else f"download did not stabilize within {timeout}s: {path}"
+    )
+    raise TimeoutError(msg)
 
 
-async def _wait_for_cloud_copy(
+async def _wait_for_upload(
     instance_id: str,
-    previous_status: str,
     timeout: int,
     poll_interval: float,
 ) -> None:
-    """Wait for a newly-started Vast Cloud Copy operation to finish."""
+    """Wait for an Instance-to-Cloud copy to complete via status_msg.
+
+    For uploads we have no local file to verify, so status_msg is the only
+    signal. Accept completion only after seeing it stable across 2 polls
+    to avoid acting on a stale status from a prior operation.
+    """
+    _done = ("cloud copy operation complete", "cloud copy operation finished")
+    _active = ("in progress", "in-progress", "copying", "transferring")
     deadline = time.monotonic() + timeout
-    saw_transition = False
-    last_status = previous_status
+    stable = 0
+    last_status = ""
     while time.monotonic() < deadline:
         status = await _instance_status(instance_id)
         lowered = status.lower()
-        if status != previous_status:
-            saw_transition = True
-        if any(marker in lowered for marker in ("failed", "error", "cancelled", "canceled")):
-            raise RuntimeError(f"cloud copy failed: {status}")
-        if saw_transition and "cloud copy operation finished" in lowered:
-            return
         last_status = status
+        if any(m in lowered for m in _COPY_FAIL_MARKERS):
+            raise RuntimeError(f"cloud upload failed: {status}")
+        done = any(m in lowered for m in _done)
+        active = any(m in lowered for m in _active)
+        if done and not active:
+            stable += 1
+            if stable >= 2:
+                return
+        else:
+            stable = 0
         await asyncio.sleep(poll_interval)
     raise TimeoutError(
-        f"cloud copy did not report completion within {timeout}s; last status: {last_status!r}"
+        f"upload did not complete within {timeout}s; last status: {last_status!r}"
     )
 
 
@@ -217,29 +274,31 @@ async def extract(
 
     input_path = _safe_input_path(in_dir, input_name)
 
-    # 1. Drive -> worker (input media). The CLI only starts an asynchronous
-    # transfer, so wait for the requested object to arrive and stabilize.
-    previous_status = await _instance_status(instance_id)
-    await _run(_copy(drive_src, in_dir, "Cloud To Instance"))
-    await _wait_for_cloud_copy(
-        instance_id,
-        previous_status,
-        TRANSFER_TIMEOUT,
-        TRANSFER_POLL_INTERVAL,
-    )
-    await _wait_for_input(input_path, TRANSFER_TIMEOUT, TRANSFER_POLL_INTERVAL)
+    # Stage markers print to the worker log (visible via `vastai logs`) so a
+    # long-running job is observably alive — the client otherwise sees nothing
+    # until the single remote() call returns.
+    def _stage(msg: str) -> None:
+        print(f"[sl] {msg}", flush=True)
 
-    # 2. Extract faces on GPU.
+    # 1. Drive -> worker. status_msg only used for failure detection; success
+    # is determined by file arrival on disk (stale "complete" causes false positives).
+    _stage(f"1/4 download {drive_src} -> worker")
+    await _run(_copy(drive_src, in_dir, "Cloud To Instance"))
+    await _wait_for_download(instance_id, input_path, TRANSFER_TIMEOUT, TRANSFER_POLL_INTERVAL)
+
+    # 2. Extract faces on GPU. Stream output so per-frame progress shows live.
+    _stage(f"2/4 extract {input_name} (D={detector} A={aligner})")
     extract_cmd = (
         f"cd {shlex.quote(FACESWAP_DIR)} && python faceswap.py extract "
         f"-i {shlex.quote(input_path)} -o {shlex.quote(faces_dir)} "
         f"-D {shlex.quote(detector)} -A {shlex.quote(aligner)} "
         f"-z {int(extract_size)} -O {shlex.quote(extract_norm)}"
     )
-    extract_log = await _run(extract_cmd)
+    await _run(extract_cmd, stream=True)
 
     # 3. Optional dedupe (mirrors local dHash thinning).
     if dedupe_threshold and int(dedupe_threshold) > 0:
+        _stage(f"3/4 dedupe (thresh={int(dedupe_threshold)})")
         deduped = f"{job_root}/faces_deduped"
         await _run(
             f"SRC={shlex.quote(faces_dir)} OUT={shlex.quote(deduped)} "
@@ -251,14 +310,9 @@ async def extract(
 
     # 4. worker -> Drive (extracted faces) — skip if nothing extracted.
     if count > 0:
-        previous_status = await _instance_status(instance_id)
+        _stage(f"4/4 upload {count} faces -> {drive_dst}")
         await _run(_copy(faces_dir, drive_dst, "Instance To Cloud"))
-        await _wait_for_cloud_copy(
-            instance_id,
-            previous_status,
-            TRANSFER_TIMEOUT,
-            TRANSFER_POLL_INTERVAL,
-        )
+        await _wait_for_upload(instance_id, TRANSFER_TIMEOUT, TRANSFER_POLL_INTERVAL)
     shutil.rmtree(job_root, ignore_errors=True)
 
     return {
@@ -266,7 +320,7 @@ async def extract(
         "input": input_name,
         "faces": count,
         "drive_dst": drive_dst if count > 0 else None,
-        "log_tail": extract_log[-500:],
+        "log_note": "extract output streamed to worker log (vastai logs <instance>)",
     }
 
 

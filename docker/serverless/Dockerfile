@@ -30,6 +30,7 @@ RUN apt-get update \
         ffmpeg \
         git \
         python3-pip \
+        python3-tk \
         python3-venv \
         python-is-python3 \
     && rm -rf /var/lib/apt/lists/*

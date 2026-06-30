@@ -9,6 +9,7 @@
   hosts: localhost
   gather_facts: false
   vars_files:
+    - ../group_vars/all.yml
     - ../group_vars/cloud.yml
   tasks:
     - name: Require deploy API key
@@ -42,13 +43,11 @@
           - "{{ sl_extract_norm }}"
           - --dedupe-threshold
           - "{{ sl_dedupe_threshold | string }}"
-        chdir: "{{ playbook_dir }}/.."
+        chdir: "{{ playbook_dir }}/../.."
       environment:
         VAST_DEPLOY_API_KEY: "{{ vast_deploy_api_key }}"
         SL_ENDPOINT_NAME: "{{ sl_endpoint_name }}"
         SL_BASE_IMAGE: "{{ sl_base_image }}"
-        SL_REQ_FILE: "{{ sl_req_file }}"
-        SL_REPO_URL: "{{ sl_repo_url }}"
         SL_CONNECTION_ID: "{{ sl_connection_id | string }}"
         SL_DISK_GB: "{{ sl_disk_gb | string }}"
         SL_COLD_WORKERS: "{{ sl_cold_workers | string }}"

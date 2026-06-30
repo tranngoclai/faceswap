@@ -23,7 +23,7 @@
           - "{{ sl_python }}"
           - scripts/cloud/serverless_extract.py
           - deploy
-        chdir: "{{ playbook_dir }}/.."
+        chdir: "{{ playbook_dir }}/../.."
       environment:
         VAST_DEPLOY_API_KEY: "{{ vast_deploy_api_key }}"
         SL_ENDPOINT_NAME: "{{ sl_endpoint_name }}"

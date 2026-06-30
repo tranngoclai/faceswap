@@ -54,9 +54,9 @@ rclone_remote: ""
 # Deploy/submit run on the CONTROL machine (need `pip install vastai`). The
 # worker pulls input + pushes faces via `vastai cloud copy` (reuses cc_* above).
 # ---------------------------------------------------------------------------
-sl_python: "python3"                          # interpreter with the vast SDK installed
+sl_python: "~/.local/pipx/venvs/vastai/bin/python3"  # interpreter with the vast SDK installed
 sl_endpoint_name: "faceswap-extract"
-sl_base_image: "ghcr.io/tranngoclai/faceswap-sl:1.0.2"  # prebuilt; build via: git tag sl-<ver> && git push
+sl_base_image: "ghcr.io/tranngoclai/faceswap-sl:1.0.3"  # prebuilt; build via: git tag sl-<ver> && git push
 # sl_req_file / sl_repo_url removed: deps + repo are baked into sl_base_image.
 # Override sl_base_image to "vastai/base-image:cuda-12.8-auto" to fall back to slow cold-start build.
 sl_connection_id: "{{ cc_connection_id }}"    # Drive cloud connection (vastai show connections)
@@ -72,8 +72,8 @@ sl_transfer_poll_interval: 3                  # seconds between status/file chec
 
 # Submit-job params (override with -e).
 sl_input: "alice.mp4"                         # media filename inside sl_drive_src
-sl_drive_src: "/faceswap-extract/in"          # Drive path holding the input
-sl_drive_dst: "/faceswap-extract/faces"       # Drive path to receive faces
+sl_drive_src: "faceswap-extract/in"           # Drive path holding the input (no leading slash for rclone)
+sl_drive_dst: "faceswap-extract/faces"        # Drive path to receive faces (no leading slash for rclone)
 sl_detector: "{{ fs_detector }}"
 sl_aligner: "{{ fs_aligner }}"
 sl_extract_size: "{{ fs_extract_size }}"

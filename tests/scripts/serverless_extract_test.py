@@ -52,51 +52,85 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
-class TransferPollingTest(unittest.IsolatedAsyncioTestCase):
-    async def test_wait_for_input_accepts_stable_nonempty_file(self):
+class DownloadPollingTest(unittest.IsolatedAsyncioTestCase):
+    async def test_wait_for_download_accepts_stable_nonempty_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "input.mp4")
-            with open(path, "wb") as stream:
-                stream.write(b"video")
+            with open(path, "wb") as f:
+                f.write(b"video")
+            ok_status = AsyncMock(return_value="Cloud Copy Operation Complete")
+            with patch.object(MODULE, "_instance_status", ok_status):
+                await MODULE._wait_for_download("123", path, timeout=1, poll_interval=0.001)
 
-            await MODULE._wait_for_input(path, timeout=1, poll_interval=0.001)
-
-    async def test_wait_for_input_times_out_for_missing_file(self):
+    async def test_wait_for_download_times_out_for_missing_file(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(TimeoutError):
-                await MODULE._wait_for_input(
-                    os.path.join(tmp, "missing.mp4"),
-                    timeout=0.01,
-                    poll_interval=0.001,
-                )
+            ok_status = AsyncMock(return_value="Cloud Copy Operation Complete")
+            with patch.object(MODULE, "_instance_status", ok_status):
+                with self.assertRaises(TimeoutError) as ctx:
+                    await MODULE._wait_for_download(
+                        "123",
+                        os.path.join(tmp, "missing.mp4"),
+                        timeout=0.01,
+                        poll_interval=0.001,
+                    )
+            self.assertIn("Check Drive path", str(ctx.exception))
 
-    async def test_wait_for_cloud_copy_requires_transition_then_completion(self):
+    async def test_wait_for_download_raises_on_copy_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fail_status = AsyncMock(return_value="Cloud Copy Failed: permission denied")
+            with patch.object(MODULE, "_instance_status", fail_status):
+                with self.assertRaisesRegex(RuntimeError, "permission denied"):
+                    await MODULE._wait_for_download(
+                        "123",
+                        os.path.join(tmp, "input.mp4"),
+                        timeout=1,
+                        poll_interval=0.001,
+                    )
+
+    async def test_wait_for_download_raises_on_cancelled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cancelled = AsyncMock(return_value="Cloud Copy Cancelled by user")
+            with patch.object(MODULE, "_instance_status", cancelled):
+                with self.assertRaises(RuntimeError):
+                    await MODULE._wait_for_download(
+                        "123",
+                        os.path.join(tmp, "input.mp4"),
+                        timeout=1,
+                        poll_interval=0.001,
+                    )
+
+
+class UploadPollingTest(unittest.IsolatedAsyncioTestCase):
+    async def test_wait_for_upload_returns_on_stable_complete(self):
         statuses = AsyncMock(
             side_effect=[
-                "Cloud Copy Operation Finished",
-                "Cloud Copy Started",
-                "Cloud Copy Operation Finished",
+                "Cloud Copy In Progress",
+                "Cloud Copy Operation Complete",
+                "Cloud Copy Operation Complete",
             ]
         )
         with patch.object(MODULE, "_instance_status", statuses):
-            await MODULE._wait_for_cloud_copy(
-                "123",
-                "Cloud Copy Operation Finished",
-                timeout=1,
-                poll_interval=0.001,
-            )
+            await MODULE._wait_for_upload("123", timeout=1, poll_interval=0.001)
+        self.assertEqual(statuses.await_count, 3)
 
-    async def test_wait_for_cloud_copy_raises_on_failure(self):
+    async def test_wait_for_upload_times_out_if_never_completes(self):
+        with patch.object(
+            MODULE, "_instance_status", AsyncMock(return_value="Cloud Copy In Progress")
+        ):
+            with self.assertRaises(TimeoutError):
+                await MODULE._wait_for_upload("123", timeout=0.01, poll_interval=0.001)
+
+    async def test_wait_for_upload_raises_on_failure(self):
         with patch.object(
             MODULE,
             "_instance_status",
             AsyncMock(return_value="Cloud Copy Failed: quota"),
         ):
             with self.assertRaisesRegex(RuntimeError, "quota"):
-                await MODULE._wait_for_cloud_copy(
-                    "123", "idle", timeout=1, poll_interval=0.001
-                )
+                await MODULE._wait_for_upload("123", timeout=1, poll_interval=0.001)
 
+
+class InstanceStatusTest(unittest.IsolatedAsyncioTestCase):
     async def test_instance_status_parses_raw_json(self):
         with patch.object(
             MODULE,
@@ -117,8 +151,8 @@ class SubmitLifecycleTest(unittest.TestCase):
     def test_submit_calls_ensure_ready_before_remote_function(self):
         args = Namespace(
             input="alice.mp4",
-            drive_src="/in",
-            drive_dst="/out",
+            drive_src="faceswap-extract/in",
+            drive_dst="faceswap-extract/faces",
             detector="retinaface",
             aligner="hrnet",
             extract_size=512,
