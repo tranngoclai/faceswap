@@ -49,20 +49,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Free runner disk: the image contains torch cu126 (~2 GB) + CUDA layers.
-      # Standard runners ship ~14 GB usable on /; without reclaim the build
-      # fills the disk, hangs dockerd, and the runner loses communication.
-      # Clearing unused SDKs frees ~30+ GB — same technique as facefusion-runpod-worker.
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: true
-          large-packages: true
-          android: true
-          dotnet: true
-          haskell: true
-          docker-images: true
-          swap-storage: true
 
       # Resolve image version: from the `sl-*` tag suffix (sl-1.0.0 → 1.0.0)
       # on a tag push, or from the manual-dispatch input.
