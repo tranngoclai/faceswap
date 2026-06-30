@@ -1,6 +1,7 @@
 ---
 # Install the on-instance cron that auto-runs `vastai cloud copy` to Drive.
-#   VAST_API_KEY=<scoped> ansible-playbook playbooks/cloud-cloudsync.yml
+# vast_api_key is loaded automatically from ~/.config/vastai/vast_cloudsync_key.
+#   ansible-playbook playbooks/cloud-cloudsync.yml
 - name: Faceswap cloud-sync cron
   hosts: cloud
   gather_facts: false

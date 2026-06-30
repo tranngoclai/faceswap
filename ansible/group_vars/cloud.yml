@@ -9,8 +9,16 @@ faceswap_pip: "/venv/main/bin/pip"
 faceswap_req_file: "requirements/requirements_nvidia_13.txt"
 faceswap_skip_torch: false                   # true = install base deps only (keep image torch)
 
-# Scoped vast API key for cloud-sync cron (prefer the env var over a stored file).
-vast_api_key: "{{ lookup('env', 'VAST_API_KEY') }}"
+# Key hierarchy (all stored at ~/.config/vastai/, env var overrides file):
+#   vast_api_key      → faceswap-cloudsync  (instance_read+write) → cloud sync cron on GPU instance
+#   vast_deploy_key   → faceswap-deploy     (misc+instance_read+write) → serverless deploy/submit
+#   VAST_API_KEY acct secret → faceswap-cloudcopy (instance_read+write) → serverless worker
+vast_api_key: >-
+  {{ lookup('env', 'VAST_API_KEY')
+     or lookup('file', '~/.config/vastai/vast_cloudsync_key', errors='ignore') | default('') }}
+vast_deploy_api_key: >-
+  {{ lookup('env', 'VAST_DEPLOY_API_KEY')
+     or lookup('file', '~/.config/vastai/vast_deploy_key', errors='ignore') | default('') }}
 
 # Training data (absolute paths under /workspace, persisted on the instance).
 fs_faces_a: "/workspace/train/input_aligned"
@@ -40,3 +48,34 @@ cc_interval_min: 10
 
 # rclone remote (alternative to vast Cloud Copy). e.g. "gdrive:faceswap-model"
 rclone_remote: ""
+
+# ---------------------------------------------------------------------------
+# Serverless extract endpoint (scripts/cloud/serverless_extract.py).
+# Deploy/submit run on the CONTROL machine (need `pip install vastai`). The
+# worker pulls input + pushes faces via `vastai cloud copy` (reuses cc_* above).
+# ---------------------------------------------------------------------------
+sl_python: "python3"                          # interpreter with the vast SDK installed
+sl_endpoint_name: "faceswap-extract"
+sl_base_image: "ghcr.io/tranngoclai/faceswap-sl:cu126"  # prebuilt; build via: git tag sl-<ver> && git push
+# sl_req_file / sl_repo_url removed: deps + repo are baked into sl_base_image.
+# Override sl_base_image to "vastai/base-image:cuda-12.8-auto" to fall back to slow cold-start build.
+sl_connection_id: "{{ cc_connection_id }}"    # Drive cloud connection (vastai show connections)
+# VAST_API_KEY for workers is an encrypted Vast account env var — store via:
+#   ansible-playbook playbooks/provision-key.yml (sets it once on the account)
+# Do NOT set sl_cloudcopy_api_key here; workers receive the secret automatically.
+sl_disk_gb: 60
+sl_cold_workers: 0                            # 0 = scale-to-zero
+sl_max_workers: 2
+sl_inactivity_timeout: 300                    # retire idle worker after N seconds
+sl_transfer_timeout: 1800                     # max seconds for each Drive transfer
+sl_transfer_poll_interval: 3                  # seconds between status/file checks
+
+# Submit-job params (override with -e).
+sl_input: "alice.mp4"                         # media filename inside sl_drive_src
+sl_drive_src: "/faceswap-extract/in"          # Drive path holding the input
+sl_drive_dst: "/faceswap-extract/faces"       # Drive path to receive faces
+sl_detector: "{{ fs_detector }}"
+sl_aligner: "{{ fs_aligner }}"
+sl_extract_size: "{{ fs_extract_size }}"
+sl_extract_norm: "{{ fs_extract_norm }}"
+sl_dedupe_threshold: "{{ fs_dedup_threshold }}"
