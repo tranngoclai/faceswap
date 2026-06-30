@@ -71,17 +71,26 @@ def _r2_list(r2_path: str, r2_bucket: str) -> list[str]:
 
 def _r2_download_sample(r2_path: str, r2_bucket: str, local_dir: str, limit: int) -> list[str]:
     """Download up to `limit` PNG files from R2 into local_dir. Returns local paths."""
-    files = [f for f in _r2_list(r2_path, r2_bucket) if f.lower().endswith(".png")][:limit]
+    all_files = _r2_list(r2_path, r2_bucket)
+    png_files = [f for f in all_files if f.lower().endswith(".png")][:limit]
+    if not png_files and not all_files:
+        raise RuntimeError(
+            f"No files found at R2 path '{r2_path}' in bucket '{r2_bucket}'. "
+            "Verify R2 credentials and that the worker uploaded successfully."
+        )
     client = _r2_client()
     prefix = r2_path.rstrip("/") + "/"
     local_paths = []
-    for fname in files:
+    errors = []
+    for fname in png_files:
         local = os.path.join(local_dir, fname)
         try:
             client.download_file(r2_bucket, prefix + fname, local)
             local_paths.append(local)
-        except Exception:
-            pass
+        except Exception as exc:
+            errors.append(f"{fname}: {exc}")
+    if errors and not local_paths:
+        raise RuntimeError(f"All preview downloads failed:\n" + "\n".join(errors))
     return local_paths
 
 
@@ -156,9 +165,19 @@ def run_extract(
         result = _submit_job(payload, timeout)
         raw = json.dumps(result, indent=2)
 
-        output = result.get("output", {})
+        # Check RunPod job status before parsing output
+        job_status = result.get("status")
+        if job_status == "FAILED":
+            error_msg = result.get("error", "Unknown worker error")
+            yield ("Error", f"RunPod job failed: {error_msg}", raw, [])
+            return
+        if job_status not in ("COMPLETED", None):
+            yield ("Error", f"RunPod job did not complete (status={job_status}). Check Raw Response.", raw, [])
+            return
+
+        output = result.get("output")
         if not isinstance(output, dict):
-            yield ("Error", "Unexpected response format.", raw, [])
+            yield ("Error", f"Unexpected output format (got {type(output).__name__}). Check Raw Response.", raw, [])
             return
 
         ok = output.get("ok", False)
@@ -166,7 +185,8 @@ def run_extract(
         out_path = output.get("r2_dst")
 
         if not ok:
-            yield ("No faces", f"⚠ No faces detected in {filename}. Check your video.", raw, [])
+            # Worker ran but found zero faces — genuine soft failure
+            yield ("No faces", f"⚠ No faces detected in {filename} (worker returned ok=false, faces={faces}). Check Raw Response.", raw, [])
             return
 
         yield ("Downloading previews", f"✓ {faces} face(s) extracted. Fetching previews…", raw, [])
