@@ -58,11 +58,11 @@ class R2TransferTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/job/faces", cmd)
 
 
-class HandlerTest(unittest.TestCase):
-    def test_handler_passes_input_to_extract_async(self):
+class HandlerTest(unittest.IsolatedAsyncioTestCase):
+    async def test_handler_passes_input_to_extract_async(self):
         fake_result = {"ok": True, "faces": 5}
         with patch.object(MODULE, "_extract_async", AsyncMock(return_value=fake_result)) as mock_extract:
-            result = MODULE.handler({"id": "job-1", "input": {
+            result = await MODULE.handler({"id": "job-1", "input": {
                 "input_name": "alice.mp4",
                 "r2_src": "extract/in",
                 "r2_dst": "extract/faces",

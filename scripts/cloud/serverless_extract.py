@@ -173,9 +173,9 @@ async def _extract_async(job_input: dict) -> dict:
         shutil.rmtree(job_root, ignore_errors=True)
 
 
-def handler(job: dict) -> dict:
-    """RunPod entrypoint: dispatch a job's input dict to the async extractor."""
-    return asyncio.run(_extract_async(job["input"]))
+async def handler(job: dict) -> dict:
+    """RunPod entrypoint: async handler so the SDK's event loop can await it."""
+    return await _extract_async(job["input"])
 
 
 def _serve() -> None:
