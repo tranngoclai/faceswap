@@ -53,7 +53,7 @@ rclone_remote: ""
 # ---------------------------------------------------------------------------
 # Absolute path (the `command` module does not expand ~); interpreter with `requests`.
 rp_python: "{{ lookup('env', 'HOME') }}/.local/pipx/venvs/runpod/bin/python3"
-rp_endpoint_id: "vb19axy2149vyy"              # RunPod endpoint ID
+rp_endpoint_id: "6kpdf1l7s6jq7t"              # RunPod endpoint ID
 
 # Cloudflare R2 storage. Credentials (RCLONE_CONFIG_R2_*) are RunPod endpoint
 # secrets set in the RunPod console — never stored here.
