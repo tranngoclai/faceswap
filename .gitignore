@@ -81,3 +81,14 @@
 !lib/gui/**/presets/train/model_phaze_a_lightweight_preset.json
 !lib/gui/**/presets/train/model_phaze_a_original_preset.json
 !lib/gui/**/presets/train/model_phaze_a_stojo_preset.json
+
+# App env
+app/.env
+
+# App
+!app/
+!app/main.py
+!app/.env.example
+
+# App env
+app/.env
