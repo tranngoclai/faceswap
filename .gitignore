@@ -30,6 +30,11 @@
 !.install/**
 !config/
 !.readthedocs.yml
+!.dockerignore
+!/docker/
+!/docker/**/
+!/docker/**/*.dockerfile
+!/docker/**/Dockerfile
 !docs/
 !docs/_static/
 !docs/_static/*.png
@@ -59,6 +64,8 @@
 !plugins/**/*.py
 !scripts/
 !scripts/*.py
+!scripts/**/
+!scripts/**/*.py
 !tools/
 !tools/**/
 !tools/**/*.py

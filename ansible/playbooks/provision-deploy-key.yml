@@ -1,0 +1,14 @@
+---
+# Mint a serverless DEPLOY key (misc + instance_read + instance_write) and
+# save it to ~/.config/vastai/vast_deploy_key on the control machine.
+# Ansible and the serverless scripts will auto-load it from that file.
+#
+#   VAST_ADMIN_KEY=<primary> ansible-playbook playbooks/provision-deploy-key.yml
+- name: Provision serverless deploy key
+  hosts: localhost
+  gather_facts: false
+  vars:
+    vast_admin_key: "{{ lookup('env', 'VAST_ADMIN_KEY') }}"
+    vast_deploy_key_name: "faceswap-deploy"
+  roles:
+    - vast_deploy_key

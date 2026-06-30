@@ -1,0 +1,42 @@
+---
+# Provision/refresh the vast.ai serverless faceswap-extract endpoint (runs LOCAL).
+# Needs the vast SDK on the control machine: pip install vastai
+#   VAST_DEPLOY_API_KEY=<deploy> ansible-playbook playbooks/cloud-serverless-deploy.yml
+- name: Deploy faceswap serverless extract endpoint
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../group_vars/cloud.yml
+  tasks:
+    - name: Require deploy API key
+      ansible.builtin.assert:
+        that:
+          - vast_deploy_api_key | length > 0
+        fail_msg: >-
+          Set VAST_DEPLOY_API_KEY (Serverless deploy/routing key).
+          The scoped cloud-copy key (VAST_API_KEY) must be pre-stored as an
+          encrypted Vast account env var via 'ansible-playbook playbooks/provision-key.yml'.
+
+    - name: Run serverless deploy
+      ansible.builtin.command:
+        argv:
+          - "{{ sl_python }}"
+          - scripts/cloud/serverless_extract.py
+          - deploy
+        chdir: "{{ playbook_dir }}/.."
+      environment:
+        VAST_DEPLOY_API_KEY: "{{ vast_deploy_api_key }}"
+        SL_ENDPOINT_NAME: "{{ sl_endpoint_name }}"
+        SL_BASE_IMAGE: "{{ sl_base_image }}"
+        SL_CONNECTION_ID: "{{ sl_connection_id | string }}"
+        SL_DISK_GB: "{{ sl_disk_gb | string }}"
+        SL_COLD_WORKERS: "{{ sl_cold_workers | string }}"
+        SL_MAX_WORKERS: "{{ sl_max_workers | string }}"
+        SL_INACTIVITY_TIMEOUT: "{{ sl_inactivity_timeout | string }}"
+        SL_TRANSFER_TIMEOUT: "{{ sl_transfer_timeout | string }}"
+        SL_TRANSFER_POLL_INTERVAL: "{{ sl_transfer_poll_interval | string }}"
+      register: deploy_out
+
+    - name: Show deploy output
+      ansible.builtin.debug:
+        var: deploy_out.stdout_lines

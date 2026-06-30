@@ -1,0 +1,23 @@
+.git
+.github
+.agents
+.claude
+.fs_cache
+__pycache__
+*.pyc
+*.log
+*.fsa
+workspace
+fsenv
+# Keep only what Dockerfile needs:
+#   requirements/_requirements_base.txt
+#   requirements/requirements_nvidia_12.txt
+#   scripts/cloud/dedupe_faces.py
+# Everything else excluded to keep build context small.
+docs
+tests
+plugins
+lib
+config
+ansible
+plans
