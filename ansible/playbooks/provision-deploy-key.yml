@@ -1,14 +1,36 @@
 ---
-# Mint a serverless DEPLOY key (misc + instance_read + instance_write) and
-# save it to ~/.config/vastai/vast_deploy_key on the control machine.
-# Ansible and the serverless scripts will auto-load it from that file.
+# Store the RunPod API key at ~/.config/runpod/key (mode 600) on the control
+# machine. Unlike the old Vast deploy key, RunPod keys are NOT minted via API —
+# create one in the RunPod console (Settings -> API Keys), then run:
 #
-#   VAST_ADMIN_KEY=<primary> ansible-playbook playbooks/provision-deploy-key.yml
-- name: Provision serverless deploy key
+#   RUNPOD_API_KEY=<key> ansible-playbook playbooks/provision-deploy-key.yml
+#
+# The serverless playbooks read RUNPOD_API_KEY from the env; this playbook just
+# persists it so you don't have to export it every session.
+- name: Provision RunPod API key
   hosts: localhost
   gather_facts: false
   vars:
-    vast_admin_key: "{{ lookup('env', 'VAST_ADMIN_KEY') }}"
-    vast_deploy_key_name: "faceswap-deploy"
-  roles:
-    - vast_deploy_key
+    runpod_api_key: "{{ lookup('env', 'RUNPOD_API_KEY') }}"
+  tasks:
+    - name: Require RUNPOD_API_KEY
+      ansible.builtin.assert:
+        that:
+          - runpod_api_key | length > 0
+        fail_msg: "Set RUNPOD_API_KEY env var (create the key in the RunPod console)."
+
+    - name: Ensure ~/.config/runpod exists
+      ansible.builtin.file:
+        path: "~/.config/runpod"
+        state: directory
+        mode: "0700"
+
+    - name: Save RunPod API key (mode 600)
+      ansible.builtin.copy:
+        dest: "~/.config/runpod/key"
+        content: "{{ runpod_api_key }}"
+        mode: "0600"
+
+    - name: Confirm
+      ansible.builtin.debug:
+        msg: "RunPod API key saved to ~/.config/runpod/key."

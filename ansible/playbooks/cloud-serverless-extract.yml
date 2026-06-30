@@ -1,38 +1,40 @@
 ---
-# Submit one extract job to the serverless endpoint (runs LOCAL). Worker pulls
-# input from Drive, extracts faces on GPU, pushes faces back to Drive.
-#   ansible-playbook playbooks/cloud-serverless-extract.yml \
-#     -e sl_input=alice.mp4 -e sl_drive_src=/faceswap-extract/in -e sl_drive_dst=/faceswap-extract/faces
-# VAST_DEPLOY_API_KEY is read from ~/.config/vastai/vast_deploy_key or env var.
-# Worker's VAST_API_KEY (cloud-copy) is an encrypted Vast account env var — no env input needed.
-- name: Submit faceswap serverless extract job
+# Submit one extract job to the RunPod serverless endpoint (runs LOCAL). Worker
+# pulls input from R2, extracts faces on GPU, pushes faces back to R2.
+#   RUNPOD_API_KEY=<key> ansible-playbook playbooks/cloud-serverless-extract.yml \
+#     -e sl_input=alice.mp4 -e sl_r2_src=extract/in -e sl_r2_dst=extract/faces
+# R2 credentials live as RunPod endpoint secrets — no env input needed here.
+- name: Submit faceswap serverless extract job to RunPod
   hosts: localhost
   gather_facts: false
   vars_files:
     - ../group_vars/all.yml
     - ../group_vars/cloud.yml
   tasks:
-    - name: Require deploy API key
+    - name: Require RunPod API key
       ansible.builtin.assert:
         that:
-          - vast_deploy_api_key | length > 0
-        fail_msg: >-
-          VAST_DEPLOY_API_KEY not found. Set it via env var or store in
-          ~/.config/vastai/vast_deploy_key (chmod 600).
-          Run 'ansible-playbook playbooks/provision-key.yml' to create it.
+          - lookup('env', 'RUNPOD_API_KEY') | length > 0
+        fail_msg: "Set RUNPOD_API_KEY env var (RunPod endpoint API key)."
+
+    - name: Require endpoint id
+      ansible.builtin.assert:
+        that:
+          - rp_endpoint_id | length > 0
+        fail_msg: "Set rp_endpoint_id in group_vars/cloud.yml (from RunPod console)."
 
     - name: Run serverless extract submit
       ansible.builtin.command:
         argv:
-          - "{{ sl_python }}"
+          - "{{ rp_python }}"
           - scripts/cloud/serverless_extract.py
           - submit
           - --input
           - "{{ sl_input }}"
-          - --drive-src
-          - "{{ sl_drive_src }}"
-          - --drive-dst
-          - "{{ sl_drive_dst }}"
+          - --r2-src
+          - "{{ sl_r2_src }}"
+          - --r2-dst
+          - "{{ sl_r2_dst }}"
           - --detector
           - "{{ sl_detector }}"
           - --aligner
@@ -43,18 +45,13 @@
           - "{{ sl_extract_norm }}"
           - --dedupe-threshold
           - "{{ sl_dedupe_threshold | string }}"
+          - --timeout
+          - "{{ sl_timeout | string }}"
         chdir: "{{ playbook_dir }}/../.."
       environment:
-        VAST_DEPLOY_API_KEY: "{{ vast_deploy_api_key }}"
-        SL_ENDPOINT_NAME: "{{ sl_endpoint_name }}"
-        SL_BASE_IMAGE: "{{ sl_base_image }}"
-        SL_CONNECTION_ID: "{{ sl_connection_id | string }}"
-        SL_DISK_GB: "{{ sl_disk_gb | string }}"
-        SL_COLD_WORKERS: "{{ sl_cold_workers | string }}"
-        SL_MAX_WORKERS: "{{ sl_max_workers | string }}"
-        SL_INACTIVITY_TIMEOUT: "{{ sl_inactivity_timeout | string }}"
-        SL_TRANSFER_TIMEOUT: "{{ sl_transfer_timeout | string }}"
-        SL_TRANSFER_POLL_INTERVAL: "{{ sl_transfer_poll_interval | string }}"
+        RUNPOD_API_KEY: "{{ lookup('env', 'RUNPOD_API_KEY') }}"
+        RUNPOD_ENDPOINT_ID: "{{ rp_endpoint_id }}"
+        R2_BUCKET: "{{ r2_bucket }}"
       register: submit_out
 
     - name: Show job result

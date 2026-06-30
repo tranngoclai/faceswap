@@ -1,25 +1,27 @@
 #!/usr/bin/env python3
-"""Vast.ai Serverless deployment: faceswap extract on GPU + upload to Google Drive.
+"""RunPod Serverless: faceswap extract on GPU + transfer faces via Cloudflare R2.
 
-One file, two roles (the vast SDK imports this same module on the worker, so it
-MUST stay a valid importable module — snake_case name, no top-level side effects
-beyond the deployment definition):
+One file, two roles (the worker image runs this same module, so it MUST stay a
+valid importable module — snake_case name, no top-level side effects):
 
-    deploy   provision/refresh the serverless endpoint
-    submit   ensure the endpoint is current, send one job, print the result
+    serve    runpod.serverless.start(): block and process jobs (Docker CMD)
+    submit   POST one job to the RunPod endpoint, print the result
 
 Flow inside a worker (one extract job):
-    Drive --(vast cloud copy: Cloud To Instance)--> /workspace/sl/in
-        --> python faceswap.py extract --> /workspace/sl/faces (+ optional dedupe)
-        --(vast cloud copy: Instance To Cloud)--> Drive/<dst>
+    R2 --(rclone copy)--> /workspace/sl/jobs/<id>/in
+        --> python faceswap.py extract --> .../faces (+ optional dedupe)
+        --(rclone copy)--> R2/<r2_dst>
 
-Auth is deliberately split: VAST_DEPLOY_API_KEY provisions/routes the deployment
-on the control machine; the worker's VAST_API_KEY (scoped to instance_read +
-api.commands.rclone POST) is injected automatically by Vast as an encrypted
-account environment variable — never baked into the deployment image definition.
-Never reuse the deploy key as the worker key.
+rclone copy is synchronous — it blocks until the transfer finishes, so there is
+no status-polling loop (unlike vast cloud copy). R2 is S3-compatible; rclone is
+configured entirely via RCLONE_CONFIG_R2_* env vars set as RunPod endpoint
+secrets, so no rclone.conf file is needed on the worker.
 
-Requires the vast SDK locally:  pip install vastai
+Auth is split: RUNPOD_API_KEY (control machine) submits jobs and is never baked
+into the image; the worker's R2 credentials (RCLONE_CONFIG_R2_*) are RunPod
+endpoint secrets, never committed to the repo.
+
+Requires `requests` locally for submit; `runpod` + `rclone` on the worker image.
 """
 import argparse
 import asyncio
@@ -27,65 +29,28 @@ import json
 import os
 import shutil
 import shlex
-import time
 import uuid
 from pathlib import PurePosixPath
 
-from vastai.serverless.remote import Deployment
+# --- Constants / env --------------------------------------------------------
 
-# --- Deployment definition (shared by deploy + serve modes) -----------------
+RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "")
+RUNPOD_ENDPOINT_ID = os.environ.get("RUNPOD_ENDPOINT_ID", "")
+RUNPOD_API_BASE = os.environ.get("RUNPOD_API_BASE", "https://api.runpod.ai/v2")
+R2_BUCKET = os.environ.get("R2_BUCKET", "faceswap")
 
-DEPLOYMENT_NAME = os.environ.get("SL_ENDPOINT_NAME", "faceswap-extract")
-# Prebuilt image (ghcr.io/tranngoclai/faceswap-sl:cu126) has faceswap + torch cu126
-# baked in — no git clone / pip at cold start. Build via:
-#   git tag sl-<version> && git push origin sl-<version>
-# Fall back to the slow vanilla base only when SL_BASE_IMAGE is overridden.
-BASE_IMAGE = os.environ.get("SL_BASE_IMAGE", "ghcr.io/tranngoclai/faceswap-sl:cu126")
-FACESWAP_DIR = "/workspace/faceswap"
-WORK_ROOT = "/workspace/sl"
+FACESWAP_DIR = os.environ.get("FACESWAP_DIR", "/workspace/faceswap")
+WORK_ROOT = os.environ.get("WORK_ROOT", "/workspace/sl")
 DEDUPE_REMOTE = f"{WORK_ROOT}/dedupe_faces.py"
-
-# Never bake the deploy credential into the worker. The deploy key provisions and
-# routes Serverless requests; the narrow cloud-copy key only runs rclone + reads
-# the worker instance status so transfers can be awaited safely.
-DEPLOY_API_KEY = os.environ.get("VAST_DEPLOY_API_KEY", "")
-CONNECTION_ID = os.environ.get("SL_CONNECTION_ID", "")
-TRANSFER_TIMEOUT = int(os.environ.get("SL_TRANSFER_TIMEOUT", "1800"))
-TRANSFER_POLL_INTERVAL = float(os.environ.get("SL_TRANSFER_POLL_INTERVAL", "3"))
-
-# Pass api_key only when set; otherwise let the SDK use the stored key
-# (`vastai set api-key`). In serve mode (on the worker) this kwarg is ignored.
-_dep_kwargs = {"api_key": DEPLOY_API_KEY} if DEPLOY_API_KEY else {}
-deployment = Deployment(name=DEPLOYMENT_NAME, **_dep_kwargs)
-
-# Image is prebuilt (faceswap + torch cu126 baked in); only set runtime env.
-# VAST_API_KEY is NOT set here — injected automatically by Vast account secrets.
-_img = deployment.image(BASE_IMAGE, storage=int(os.environ.get("SL_DISK_GB", "60")))
-_img.use_system_python()
-_img.env(
-    FACESWAP_BACKEND="nvidia",
-    KERAS_BACKEND="torch",
-    SL_CONNECTION_ID=CONNECTION_ID,
-)
-
-# Scale-to-zero: no idle workers; spin up on demand, retire after inactivity.
-deployment.configure_autoscaling(
-    cold_workers=int(os.environ.get("SL_COLD_WORKERS", "0")),
-    max_workers=int(os.environ.get("SL_MAX_WORKERS", "2")),
-    inactivity_timeout=int(os.environ.get("SL_INACTIVITY_TIMEOUT", "300")),
-    target_util=0.9,  # sane defaults; not operator-tuned (keep config surface small)
-    cold_mult=1,
-)
 
 
 async def _run(cmd: str, stream: bool = False) -> str:
     """Run a shell command, raise with output on failure.
 
-    stream=False (default): capture combined stdout/stderr and return it (used
-    for short commands whose output we parse or tail).
+    stream=False (default): capture combined stdout/stderr and return it.
     stream=True: inherit the parent's stdout/stderr so long-running output (e.g.
-    faceswap's per-frame progress) shows live in the worker container log
-    (`vastai logs <instance>`); returns "" since nothing is captured.
+    faceswap's per-frame progress, rclone --progress) shows live in the worker
+    container log; returns "" since nothing is captured.
     """
     pipe = None if stream else asyncio.subprocess.PIPE
     proc = await asyncio.create_subprocess_shell(
@@ -100,111 +65,23 @@ async def _run(cmd: str, stream: bool = False) -> str:
     return text
 
 
-async def _instance_status(instance_id: str) -> str:
-    """Return the worker status message used by Vast to report Cloud Copy."""
-    output = await _run(
-        f"vastai show instance {shlex.quote(instance_id)} --raw --no-color"
+# --- rclone helpers (Cloudflare R2, synchronous) ----------------------------
+
+async def _r2_download(r2_src: str, local_dir: str) -> None:
+    """rclone copy r2:<bucket>/<r2_src> <local_dir> — blocks until done."""
+    remote = shlex.quote(f"r2:{R2_BUCKET}/{r2_src}")
+    await _run(
+        f"rclone copy {remote} {shlex.quote(local_dir)} --progress",
+        stream=True,
     )
-    try:
-        payload = json.loads(output)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"invalid `vastai show instance --raw` output: {output}") from exc
-    return str(payload.get("status_msg") or "").strip()
 
 
-# Vast cloud copy is async: CLI posts to API and returns immediately; their
-# infrastructure starts rclone on the instance (typically 2-5 min startup delay).
-# status_msg is used ONLY for failure detection — it's unreliable for success
-# (stale "complete" from prior copies causes false positives).
-# File existence on disk is the authoritative success signal.
-_COPY_FAIL_MARKERS = ("failed", "cancelled", "canceled")
-
-
-async def _wait_for_download(
-    instance_id: str,
-    path: str,
-    timeout: int,
-    poll_interval: float,
-) -> None:
-    """Wait for a Cloud-to-Instance copy to land on disk.
-
-    Uses status_msg only for failure detection (fast fail). Success is determined
-    by file/dir existence and stable size — not by status_msg — because Vast's
-    status can be stale from prior operations.
-    Progress is logged every 30s so the worker log shows the job is alive.
-    """
-    deadline = time.monotonic() + timeout
-    start = time.monotonic()
-    previous_size = None
-    stable_polls = 0
-    appeared = False
-    last_log = start
-    name = os.path.basename(path)
-    while time.monotonic() < deadline:
-        now = time.monotonic()
-        if now - last_log >= 30:
-            print(f"[sl] waiting for {name} ... ({int(now - start)}s)", flush=True)
-            last_log = now
-        status = await _instance_status(instance_id)
-        if any(m in status.lower() for m in _COPY_FAIL_MARKERS):
-            raise RuntimeError(f"cloud copy failed: {status}")
-        if os.path.exists(path):
-            appeared = True
-            if os.path.isdir(path):
-                size = sum(
-                    os.path.getsize(os.path.join(root, f))
-                    for root, _, files in os.walk(path)
-                    for f in files
-                )
-            else:
-                size = os.path.getsize(path)
-            stable_polls = stable_polls + 1 if size == previous_size else 0
-            previous_size = size
-            if size > 0 and stable_polls >= 2:
-                return
-        await asyncio.sleep(poll_interval)
-    msg = (
-        f"download timed out after {timeout}s — '{name}' never arrived. "
-        "Check Drive path (no leading slash) and connection id."
-        if not appeared
-        else f"download did not stabilize within {timeout}s: {path}"
-    )
-    raise TimeoutError(msg)
-
-
-async def _wait_for_upload(
-    instance_id: str,
-    timeout: int,
-    poll_interval: float,
-) -> None:
-    """Wait for an Instance-to-Cloud copy to complete via status_msg.
-
-    For uploads we have no local file to verify, so status_msg is the only
-    signal. Accept completion only after seeing it stable across 2 polls
-    to avoid acting on a stale status from a prior operation.
-    """
-    _done = ("cloud copy operation complete", "cloud copy operation finished")
-    _active = ("in progress", "in-progress", "copying", "transferring")
-    deadline = time.monotonic() + timeout
-    stable = 0
-    last_status = ""
-    while time.monotonic() < deadline:
-        status = await _instance_status(instance_id)
-        lowered = status.lower()
-        last_status = status
-        if any(m in lowered for m in _COPY_FAIL_MARKERS):
-            raise RuntimeError(f"cloud upload failed: {status}")
-        done = any(m in lowered for m in _done)
-        active = any(m in lowered for m in _active)
-        if done and not active:
-            stable += 1
-            if stable >= 2:
-                return
-        else:
-            stable = 0
-        await asyncio.sleep(poll_interval)
-    raise TimeoutError(
-        f"upload did not complete within {timeout}s; last status: {last_status!r}"
+async def _r2_upload(local_dir: str, r2_dst: str) -> None:
+    """rclone copy <local_dir> r2:<bucket>/<r2_dst> — blocks until done."""
+    remote = shlex.quote(f"r2:{R2_BUCKET}/{r2_dst}")
+    await _run(
+        f"rclone copy {shlex.quote(local_dir)} {remote} --progress",
+        stream=True,
     )
 
 
@@ -216,46 +93,25 @@ def _safe_input_path(in_dir: str, input_name: str) -> str:
     return f"{in_dir}/{path.as_posix()}"
 
 
-@deployment.remote(benchmark_dataset=[{}], benchmark_runs=3)
-async def benchmark() -> dict:
-    """Small GPU benchmark required by the Vast Serverless autoscaler."""
-    import torch
+# --- RunPod handler (worker role) -------------------------------------------
 
-    x = torch.ones((512, 512), device="cuda")
-    _ = x @ x
-    torch.cuda.synchronize()
-    return {"ok": True}
+async def _extract_async(job_input: dict) -> dict:
+    """Extract faces from one media file pulled from R2, push faces back to R2.
 
-
-@deployment.remote()
-async def extract(
-    input_name: str,
-    drive_src: str,
-    drive_dst: str,
-    detector: str = "retinaface",
-    aligner: str = "hrnet",
-    extract_size: int = 512,
-    extract_norm: str = "hist",
-    dedupe_threshold: int = 6,
-) -> dict:
-    """Extract faces from one media file pulled from Drive, push faces back to Drive.
-
-    drive_src: Drive path of the input dir holding `input_name` (video or frame dir).
-    drive_dst: Drive path to receive the extracted faces.
+    job_input keys:
+        input_name   media filename inside r2_src (video or frame dir)
+        r2_src       R2 path holding input_name
+        r2_dst       R2 path to receive the extracted faces
+        detector, aligner, extract_size, extract_norm, dedupe_threshold (optional)
     """
-    instance_id = os.environ.get("CONTAINER_ID", "")
-    conn = os.environ.get("SL_CONNECTION_ID", "")
-    # Assert scoped key is present (injected by Vast account env); never log the value.
-    if not os.environ.get("VAST_API_KEY"):
-        raise RuntimeError(
-            "VAST_API_KEY is not set on worker — ensure the scoped cloud-copy key "
-            "is stored as an encrypted Vast account environment variable "
-            "(POST /api/v0/secrets/ with key=VAST_API_KEY)."
-        )
-    if not instance_id or not conn:
-        raise RuntimeError(
-            f"missing CONTAINER_ID={instance_id!r} or SL_CONNECTION_ID={conn!r} on worker"
-        )
+    input_name = job_input["input_name"]
+    r2_src = job_input["r2_src"]
+    r2_dst = job_input["r2_dst"]
+    detector = job_input.get("detector", "retinaface")
+    aligner = job_input.get("aligner", "hrnet")
+    extract_size = int(job_input.get("extract_size", 512))
+    extract_norm = job_input.get("extract_norm", "hist")
+    dedupe_threshold = int(job_input.get("dedupe_threshold", 6))
 
     job_root = f"{WORK_ROOT}/jobs/{uuid.uuid4().hex}"
     in_dir = f"{job_root}/in"
@@ -263,111 +119,125 @@ async def extract(
     os.makedirs(in_dir, exist_ok=True)
     os.makedirs(faces_dir, exist_ok=True)
 
-    def _copy(src: str, dst: str, direction: str) -> str:
-        # shlex.quote every interpolated value: filenames/paths may contain spaces
-        # or shell metacharacters that would otherwise break or inject the command.
-        return (
-            f"vastai cloud copy --src {shlex.quote(src)} --dst {shlex.quote(dst)} "
-            f"--instance {shlex.quote(instance_id)} --connection {shlex.quote(conn)} "
-            f"--transfer {shlex.quote(direction)}"
-        )
-
     input_path = _safe_input_path(in_dir, input_name)
 
-    # Stage markers print to the worker log (visible via `vastai logs`) so a
-    # long-running job is observably alive — the client otherwise sees nothing
-    # until the single remote() call returns.
+    # Stage markers print to the worker log so a long job is observably alive.
     def _stage(msg: str) -> None:
         print(f"[sl] {msg}", flush=True)
 
-    # 1. Drive -> worker. status_msg only used for failure detection; success
-    # is determined by file arrival on disk (stale "complete" causes false positives).
-    _stage(f"1/4 download {drive_src} -> worker")
-    await _run(_copy(drive_src, in_dir, "Cloud To Instance"))
-    await _wait_for_download(instance_id, input_path, TRANSFER_TIMEOUT, TRANSFER_POLL_INTERVAL)
+    try:
+        # 1. R2 -> worker. rclone copy is synchronous; no poll loop needed.
+        _stage(f"1/4 download {r2_src} -> worker")
+        await _r2_download(r2_src, in_dir)
 
-    # 2. Extract faces on GPU. Stream output so per-frame progress shows live.
-    _stage(f"2/4 extract {input_name} (D={detector} A={aligner})")
-    extract_cmd = (
-        f"cd {shlex.quote(FACESWAP_DIR)} && python faceswap.py extract "
-        f"-i {shlex.quote(input_path)} -o {shlex.quote(faces_dir)} "
-        f"-D {shlex.quote(detector)} -A {shlex.quote(aligner)} "
-        f"-z {int(extract_size)} -O {shlex.quote(extract_norm)}"
-    )
-    await _run(extract_cmd, stream=True)
-
-    # 3. Optional dedupe (mirrors local dHash thinning).
-    if dedupe_threshold and int(dedupe_threshold) > 0:
-        _stage(f"3/4 dedupe (thresh={int(dedupe_threshold)})")
-        deduped = f"{job_root}/faces_deduped"
-        await _run(
-            f"SRC={shlex.quote(faces_dir)} OUT={shlex.quote(deduped)} "
-            f"THRESH={int(dedupe_threshold)} python {shlex.quote(DEDUPE_REMOTE)}"
+        # 2. Extract faces on GPU. Stream output so progress shows live.
+        _stage(f"2/4 extract {input_name} (D={detector} A={aligner})")
+        extract_cmd = (
+            f"cd {shlex.quote(FACESWAP_DIR)} && python faceswap.py extract "
+            f"-i {shlex.quote(input_path)} -o {shlex.quote(faces_dir)} "
+            f"-D {shlex.quote(detector)} -A {shlex.quote(aligner)} "
+            f"-z {int(extract_size)} -O {shlex.quote(extract_norm)}"
         )
-        faces_dir = deduped
+        await _run(extract_cmd, stream=True)
 
-    count = len([f for f in os.listdir(faces_dir) if f.lower().endswith(".png")])
+        def _png_count(d: str) -> int:
+            return len([f for f in os.listdir(d) if f.lower().endswith(".png")])
 
-    # 4. worker -> Drive (extracted faces) — skip if nothing extracted.
-    if count > 0:
-        _stage(f"4/4 upload {count} faces -> {drive_dst}")
-        await _run(_copy(faces_dir, drive_dst, "Instance To Cloud"))
-        await _wait_for_upload(instance_id, TRANSFER_TIMEOUT, TRANSFER_POLL_INTERVAL)
-    shutil.rmtree(job_root, ignore_errors=True)
+        # 3. Optional dedupe (mirrors local dHash thinning). Skip when extract
+        # produced nothing — dedupe on an empty dir would fail the job instead
+        # of returning the intended ok:false soft-failure.
+        if dedupe_threshold and int(dedupe_threshold) > 0 and _png_count(faces_dir) > 0:
+            _stage(f"3/4 dedupe (thresh={int(dedupe_threshold)})")
+            deduped = f"{job_root}/faces_deduped"
+            await _run(
+                f"SRC={shlex.quote(faces_dir)} OUT={shlex.quote(deduped)} "
+                f"THRESH={int(dedupe_threshold)} python {shlex.quote(DEDUPE_REMOTE)}"
+            )
+            faces_dir = deduped
 
-    return {
-        "ok": count > 0,  # zero faces = soft failure (bad input / no detections)
-        "input": input_name,
-        "faces": count,
-        "drive_dst": drive_dst if count > 0 else None,
-        "log_note": "extract output streamed to worker log (vastai logs <instance>)",
-    }
+        count = _png_count(faces_dir)
+
+        # 4. worker -> R2 (extracted faces) — skip if nothing extracted.
+        if count > 0:
+            _stage(f"4/4 upload {count} faces -> {r2_dst}")
+            await _r2_upload(faces_dir, r2_dst)
+
+        return {
+            "ok": count > 0,  # zero faces = soft failure (bad input / no detections)
+            "input": input_name,
+            "faces": count,
+            "r2_dst": r2_dst if count > 0 else None,
+            "log_note": "extract output streamed to worker log (RunPod console)",
+        }
+    finally:
+        shutil.rmtree(job_root, ignore_errors=True)
+
+
+def handler(job: dict) -> dict:
+    """RunPod entrypoint: dispatch a job's input dict to the async extractor."""
+    return asyncio.run(_extract_async(job["input"]))
+
+
+def _serve() -> None:
+    """Start the RunPod worker loop (blocks waiting for jobs)."""
+    import runpod
+
+    runpod.serverless.start({"handler": handler})
 
 
 # --- CLI --------------------------------------------------------------------
 
-def _deploy() -> None:
-    deployment.ensure_ready()
-    print(f"deployed endpoint '{DEPLOYMENT_NAME}'")
-
-
 def _submit(a: argparse.Namespace) -> None:
-    # Deployment objects do not reconnect across processes. ensure_ready() is
-    # required in this submit process; unchanged deployments use Vast's Tier 0.
-    deployment.ensure_ready()
-    result = asyncio.run(
-        extract(
-            input_name=a.input,
-            drive_src=a.drive_src,
-            drive_dst=a.drive_dst,
-            detector=a.detector,
-            aligner=a.aligner,
-            extract_size=a.extract_size,
-            extract_norm=a.extract_norm,
-            dedupe_threshold=a.dedupe_threshold,
-        )
+    """POST one extract job to the RunPod endpoint and print the response."""
+    if not RUNPOD_API_KEY:
+        raise RuntimeError("RUNPOD_API_KEY is not set — required to submit jobs.")
+    if not RUNPOD_ENDPOINT_ID:
+        raise RuntimeError("RUNPOD_ENDPOINT_ID is not set — required to submit jobs.")
+
+    import requests
+
+    payload = {"input": {
+        "input_name": a.input,
+        "r2_src": a.r2_src,
+        "r2_dst": a.r2_dst,
+        "detector": a.detector,
+        "aligner": a.aligner,
+        "extract_size": a.extract_size,
+        "extract_norm": a.extract_norm,
+        "dedupe_threshold": a.dedupe_threshold,
+    }}
+    # /runsync blocks until the job finishes (or the client timeout elapses),
+    # so the result JSON is returned directly — no separate status poll needed.
+    url = f"{RUNPOD_API_BASE}/{RUNPOD_ENDPOINT_ID}/runsync"
+    resp = requests.post(
+        url,
+        json=payload,
+        headers={"Authorization": f"Bearer {RUNPOD_API_KEY}"},
+        timeout=a.timeout,
     )
-    print(json.dumps(result, indent=2))
+    resp.raise_for_status()
+    print(json.dumps(resp.json(), indent=2))
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest="mode", required=True)
-    sub.add_parser("deploy", help="provision/refresh the endpoint")
+    sub.add_parser("serve", help="start the RunPod worker loop (Docker CMD)")
 
-    s = sub.add_parser("submit", help="send an extract job")
-    s.add_argument("--input", required=True, help="media filename inside drive_src")
-    s.add_argument("--drive-src", dest="drive_src", required=True)
-    s.add_argument("--drive-dst", dest="drive_dst", required=True)
+    s = sub.add_parser("submit", help="POST one extract job to the endpoint")
+    s.add_argument("--input", required=True, help="media filename inside r2_src")
+    s.add_argument("--r2-src", dest="r2_src", required=True)
+    s.add_argument("--r2-dst", dest="r2_dst", required=True)
     s.add_argument("--detector", default="retinaface")
     s.add_argument("--aligner", default="hrnet")
     s.add_argument("--extract-size", dest="extract_size", type=int, default=512)
     s.add_argument("--extract-norm", dest="extract_norm", default="hist")
     s.add_argument("--dedupe-threshold", dest="dedupe_threshold", type=int, default=6)
+    s.add_argument("--timeout", type=int, default=600, help="client wait for runsync (s)")
 
     a = p.parse_args()
-    if a.mode == "deploy":
-        _deploy()
+    if a.mode == "serve":
+        _serve()
     else:
         _submit(a)
 

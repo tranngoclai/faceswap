@@ -1,42 +1,35 @@
 ---
-# Provision/refresh the vast.ai serverless faceswap-extract endpoint (runs LOCAL).
-# Needs the vast SDK on the control machine: pip install vastai
-#   VAST_DEPLOY_API_KEY=<deploy> ansible-playbook playbooks/cloud-serverless-deploy.yml
-- name: Deploy faceswap serverless extract endpoint
+# Health-check the RunPod faceswap-extract serverless endpoint (runs LOCAL).
+# RunPod has no Ansible-driven "deploy": the endpoint is created once in the
+# RunPod console. This playbook only confirms it is reachable.
+#   RUNPOD_API_KEY=<key> ansible-playbook playbooks/cloud-serverless-deploy.yml
+- name: Check RunPod faceswap-extract endpoint health
   hosts: localhost
   gather_facts: false
   vars_files:
     - ../group_vars/cloud.yml
   tasks:
-    - name: Require deploy API key
+    - name: Require RunPod API key
       ansible.builtin.assert:
         that:
-          - vast_deploy_api_key | length > 0
-        fail_msg: >-
-          Set VAST_DEPLOY_API_KEY (Serverless deploy/routing key).
-          The scoped cloud-copy key (VAST_API_KEY) must be pre-stored as an
-          encrypted Vast account env var via 'ansible-playbook playbooks/provision-key.yml'.
+          - lookup('env', 'RUNPOD_API_KEY') | length > 0
+        fail_msg: "Set RUNPOD_API_KEY env var (RunPod endpoint API key)."
 
-    - name: Run serverless deploy
-      ansible.builtin.command:
-        argv:
-          - "{{ sl_python }}"
-          - scripts/cloud/serverless_extract.py
-          - deploy
-        chdir: "{{ playbook_dir }}/../.."
-      environment:
-        VAST_DEPLOY_API_KEY: "{{ vast_deploy_api_key }}"
-        SL_ENDPOINT_NAME: "{{ sl_endpoint_name }}"
-        SL_BASE_IMAGE: "{{ sl_base_image }}"
-        SL_CONNECTION_ID: "{{ sl_connection_id | string }}"
-        SL_DISK_GB: "{{ sl_disk_gb | string }}"
-        SL_COLD_WORKERS: "{{ sl_cold_workers | string }}"
-        SL_MAX_WORKERS: "{{ sl_max_workers | string }}"
-        SL_INACTIVITY_TIMEOUT: "{{ sl_inactivity_timeout | string }}"
-        SL_TRANSFER_TIMEOUT: "{{ sl_transfer_timeout | string }}"
-        SL_TRANSFER_POLL_INTERVAL: "{{ sl_transfer_poll_interval | string }}"
-      register: deploy_out
+    - name: Require endpoint id
+      ansible.builtin.assert:
+        that:
+          - rp_endpoint_id | length > 0
+        fail_msg: "Set rp_endpoint_id in group_vars/cloud.yml (from RunPod console)."
 
-    - name: Show deploy output
+    - name: Check endpoint health
+      ansible.builtin.uri:
+        url: "https://api.runpod.ai/v2/{{ rp_endpoint_id }}/health"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ lookup('env', 'RUNPOD_API_KEY') }}"
+        status_code: 200
+      register: health
+
+    - name: Show health
       ansible.builtin.debug:
-        var: deploy_out.stdout_lines
+        var: health.json

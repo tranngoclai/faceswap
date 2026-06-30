@@ -1,16 +1,16 @@
-# Serverless worker base image: faceswap + CUDA 12.6 + torch cu126.
+# RunPod Serverless worker image: faceswap + CUDA 12.6 + torch cu126 + rclone.
 # Built ONCE via .github/workflows/build-serverless-image.yml (or manually).
-# The Vast Serverless deployment does FROM this image — no git clone / pip at cold start.
+# RunPod runs this image directly (CMD below starts the worker) — no git clone /
+# pip at cold start.
 #
 # Built by CI: .github/workflows/build-serverless-image.yml (pushes to ghcr.io with zstd).
-# To build locally (amd64 only — Vast workers are x86_64):
+# To build locally (amd64 only — RunPod workers are x86_64):
 #   docker buildx build --platform linux/amd64 -f docker/serverless/Dockerfile \
 #     --output type=image,compression=zstd,force-compression=false,push=true \
 #     --tag ghcr.io/tranngoclai/faceswap-sl:cu126 .
 
-# CUDA 12.6 + cuDNN 9 — matches sl_base_image vastai/base-image:cuda-12.8-auto driver floor.
-# Use nvidia/cuda rather than vastai/base-image so we can build on standard runners
-# without a Vast-specific base that is not on Docker Hub.
+# CUDA 12.6 + cuDNN 9 — RunPod supports CUDA 12.x. nvidia/cuda is a standard base
+# buildable on any runner.
 FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -35,6 +35,10 @@ RUN apt-get update \
         python-is-python3 \
     && rm -rf /var/lib/apt/lists/*
 
+# 1b. rclone (R2 transfers). Official installer ships the latest static binary;
+#     R2 chunked upload support requires rclone >= 1.62.
+RUN curl -fsSL https://rclone.org/install.sh | bash
+
 # 2. Clone faceswap. Drop .git to shrink the layer.
 #    A version bump here only invalidates layers 2+ (not the apt layer).
 ARG FACESWAP_REPO=https://github.com/deepfakes/faceswap.git
@@ -47,9 +51,14 @@ COPY requirements/_requirements_base.txt requirements/requirements_nvidia_12.txt
      /tmp/requirements/
 RUN pip install --no-cache-dir --break-system-packages \
         -r /tmp/requirements/requirements_nvidia_12.txt \
+        runpod \
     && rm -rf /tmp/requirements
 
-# 4. Dedupe helper (small, changes independently of deps).
+# 4. Worker scripts (small, change independently of deps).
 COPY scripts/cloud/dedupe_faces.py ${WORK_ROOT}/dedupe_faces.py
+COPY scripts/cloud/serverless_extract.py ${WORK_ROOT}/serverless_extract.py
 
 WORKDIR ${FACESWAP_DIR}
+
+# RunPod starts the worker via the image's default command.
+CMD ["python", "/workspace/sl/serverless_extract.py", "serve"]

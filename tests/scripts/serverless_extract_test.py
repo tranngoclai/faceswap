@@ -1,49 +1,35 @@
-"""Unit tests for Serverless transfer polling without requiring the Vast SDK."""
+"""Unit tests for the RunPod serverless extractor without the runpod SDK."""
 import importlib.util
-import os
 import sys
-import tempfile
 import types
 import unittest
 from argparse import Namespace
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
-class _Image:
-    def __getattr__(self, _name):
-        return lambda *args, **kwargs: self
+# Stub the runpod SDK so the module imports without it installed. _serve() calls
+# runpod.serverless.start(); tests exercise handler() directly, so start is a no-op.
+runpod_mod = types.ModuleType("runpod")
+serverless_mod = types.ModuleType("runpod.serverless")
 
 
-class _Deployment:
-    def __init__(self, *args, **kwargs):
-        self.ready_calls = 0
-
-    def image(self, *args, **kwargs):
-        return _Image()
-
-    def configure_autoscaling(self, **kwargs):
-        return None
-
-    def remote(self, *args, **kwargs):
-        def decorator(func):
-            return func
-
-        return decorator
-
-    def ensure_ready(self):
-        self.ready_calls += 1
+def _fake_start(config):
+    return None
 
 
-vastai = types.ModuleType("vastai")
-serverless = types.ModuleType("vastai.serverless")
-remote = types.ModuleType("vastai.serverless.remote")
-remote.Deployment = _Deployment
-sys.modules.setdefault("vastai", vastai)
-sys.modules.setdefault("vastai.serverless", serverless)
-sys.modules.setdefault("vastai.serverless.remote", remote)
+serverless_mod.start = _fake_start
+runpod_mod.serverless = serverless_mod
+sys.modules.setdefault("runpod", runpod_mod)
+sys.modules.setdefault("runpod.serverless", serverless_mod)
+
+# Stub `requests` so _submit imports cleanly without the package installed; the
+# POST test patches requests.post on this stub.
+requests_mod = types.ModuleType("requests")
+requests_mod.post = MagicMock()
+sys.modules.setdefault("requests", requests_mod)
 
 SCRIPT = Path(__file__).parents[2] / "scripts" / "cloud" / "serverless_extract.py"
 SPEC = importlib.util.spec_from_file_location("serverless_extract_under_test", SCRIPT)
@@ -52,118 +38,76 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
-class DownloadPollingTest(unittest.IsolatedAsyncioTestCase):
-    async def test_wait_for_download_accepts_stable_nonempty_file(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "input.mp4")
-            with open(path, "wb") as f:
-                f.write(b"video")
-            ok_status = AsyncMock(return_value="Cloud Copy Operation Complete")
-            with patch.object(MODULE, "_instance_status", ok_status):
-                await MODULE._wait_for_download("123", path, timeout=1, poll_interval=0.001)
+class R2TransferTest(unittest.IsolatedAsyncioTestCase):
+    async def test_r2_download_runs_rclone_copy(self):
+        with patch.object(MODULE, "_run", AsyncMock(return_value="")) as mock_run:
+            await MODULE._r2_download("extract/in/alice.mp4", "/job/in")
+        mock_run.assert_awaited_once()
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("rclone copy", cmd)
+        self.assertIn("r2:", cmd)
+        self.assertIn("/job/in", cmd)
 
-    async def test_wait_for_download_times_out_for_missing_file(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            ok_status = AsyncMock(return_value="Cloud Copy Operation Complete")
-            with patch.object(MODULE, "_instance_status", ok_status):
-                with self.assertRaises(TimeoutError) as ctx:
-                    await MODULE._wait_for_download(
-                        "123",
-                        os.path.join(tmp, "missing.mp4"),
-                        timeout=0.01,
-                        poll_interval=0.001,
-                    )
-            self.assertIn("Check Drive path", str(ctx.exception))
-
-    async def test_wait_for_download_raises_on_copy_failure(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            fail_status = AsyncMock(return_value="Cloud Copy Failed: permission denied")
-            with patch.object(MODULE, "_instance_status", fail_status):
-                with self.assertRaisesRegex(RuntimeError, "permission denied"):
-                    await MODULE._wait_for_download(
-                        "123",
-                        os.path.join(tmp, "input.mp4"),
-                        timeout=1,
-                        poll_interval=0.001,
-                    )
-
-    async def test_wait_for_download_raises_on_cancelled(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            cancelled = AsyncMock(return_value="Cloud Copy Cancelled by user")
-            with patch.object(MODULE, "_instance_status", cancelled):
-                with self.assertRaises(RuntimeError):
-                    await MODULE._wait_for_download(
-                        "123",
-                        os.path.join(tmp, "input.mp4"),
-                        timeout=1,
-                        poll_interval=0.001,
-                    )
+    async def test_r2_upload_runs_rclone_copy(self):
+        with patch.object(MODULE, "_run", AsyncMock(return_value="")) as mock_run:
+            await MODULE._r2_upload("/job/faces", "extract/faces/alice")
+        mock_run.assert_awaited_once()
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("rclone copy", cmd)
+        self.assertIn("r2:", cmd)
+        self.assertIn("/job/faces", cmd)
 
 
-class UploadPollingTest(unittest.IsolatedAsyncioTestCase):
-    async def test_wait_for_upload_returns_on_stable_complete(self):
-        statuses = AsyncMock(
-            side_effect=[
-                "Cloud Copy In Progress",
-                "Cloud Copy Operation Complete",
-                "Cloud Copy Operation Complete",
-            ]
-        )
-        with patch.object(MODULE, "_instance_status", statuses):
-            await MODULE._wait_for_upload("123", timeout=1, poll_interval=0.001)
-        self.assertEqual(statuses.await_count, 3)
-
-    async def test_wait_for_upload_times_out_if_never_completes(self):
-        with patch.object(
-            MODULE, "_instance_status", AsyncMock(return_value="Cloud Copy In Progress")
-        ):
-            with self.assertRaises(TimeoutError):
-                await MODULE._wait_for_upload("123", timeout=0.01, poll_interval=0.001)
-
-    async def test_wait_for_upload_raises_on_failure(self):
-        with patch.object(
-            MODULE,
-            "_instance_status",
-            AsyncMock(return_value="Cloud Copy Failed: quota"),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "quota"):
-                await MODULE._wait_for_upload("123", timeout=1, poll_interval=0.001)
-
-
-class InstanceStatusTest(unittest.IsolatedAsyncioTestCase):
-    async def test_instance_status_parses_raw_json(self):
-        with patch.object(
-            MODULE,
-            "_run",
-            AsyncMock(return_value='{"status_msg": "Cloud Copy Started"}'),
-        ):
-            self.assertEqual(
-                await MODULE._instance_status("123"), "Cloud Copy Started"
-            )
+class HandlerTest(unittest.TestCase):
+    def test_handler_passes_input_to_extract_async(self):
+        fake_result = {"ok": True, "faces": 5}
+        with patch.object(MODULE, "_extract_async", AsyncMock(return_value=fake_result)) as mock_extract:
+            result = MODULE.handler({"id": "job-1", "input": {
+                "input_name": "alice.mp4",
+                "r2_src": "extract/in",
+                "r2_dst": "extract/faces",
+            }})
+        self.assertEqual(result, fake_result)
+        mock_extract.assert_awaited_once()
+        passed_input = mock_extract.call_args[0][0]
+        self.assertEqual(passed_input["input_name"], "alice.mp4")
 
 
 class SubmitLifecycleTest(unittest.TestCase):
-    def test_deploy_calls_ensure_ready(self):
-        before = MODULE.deployment.ready_calls
-        MODULE._deploy()
-        self.assertEqual(MODULE.deployment.ready_calls, before + 1)
-
-    def test_submit_calls_ensure_ready_before_remote_function(self):
-        args = Namespace(
-            input="alice.mp4",
-            drive_src="faceswap-extract/in",
-            drive_dst="faceswap-extract/faces",
-            detector="retinaface",
-            aligner="hrnet",
-            extract_size=512,
-            extract_norm="hist",
-            dedupe_threshold=6,
+    def _args(self):
+        return Namespace(
+            input="alice.mp4", r2_src="extract/in", r2_dst="extract/faces",
+            detector="retinaface", aligner="hrnet", extract_size=512,
+            extract_norm="hist", dedupe_threshold=6, timeout=600,
         )
-        before = MODULE.deployment.ready_calls
-        with patch.object(MODULE, "extract", AsyncMock(return_value={"ok": True})):
+
+    def test_submit_posts_to_runpod_api(self):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"status": "COMPLETED", "output": {"ok": True}}
+        mock_resp.raise_for_status = lambda: None
+        with patch.object(MODULE, "RUNPOD_API_KEY", "k"), \
+                patch.object(MODULE, "RUNPOD_ENDPOINT_ID", "ep1"), \
+                patch("requests.post", return_value=mock_resp) as mock_post:
             with redirect_stdout(StringIO()):
-                MODULE._submit(args)
-        self.assertEqual(MODULE.deployment.ready_calls, before + 1)
+                MODULE._submit(self._args())
+        mock_post.assert_called_once()
+        url = mock_post.call_args[0][0]
+        self.assertIn("runsync", url)
+        self.assertIn("ep1", url)
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["input"]["input_name"], "alice.mp4")
+
+    def test_submit_requires_api_key(self):
+        with patch.object(MODULE, "RUNPOD_API_KEY", ""), \
+                patch.object(MODULE, "RUNPOD_ENDPOINT_ID", "ep1"):
+            with self.assertRaises(RuntimeError):
+                MODULE._submit(self._args())
+
+    def test_submit_requires_endpoint_id(self):
+        with patch.object(MODULE, "RUNPOD_API_KEY", "k"), \
+                patch.object(MODULE, "RUNPOD_ENDPOINT_ID", ""):
+            with self.assertRaises(RuntimeError):
+                MODULE._submit(self._args())
 
 
 class InputValidationTest(unittest.TestCase):
@@ -178,6 +122,7 @@ class InputValidationTest(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
                     MODULE._safe_input_path("/job/in", value)
+
 
 if __name__ == "__main__":
     unittest.main()

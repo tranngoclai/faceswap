@@ -13,6 +13,8 @@ Train faceswap trên GPU thuê tại [vast.ai](https://cloud.vast.ai).
 | Cloud: TensorBoard | `ansible-playbook playbooks/cloud-board.yml` |
 | Cloud: auto cloud-sync cron | `VAST_API_KEY=<scoped> ansible-playbook playbooks/cloud-cloudsync.yml` |
 | Cloud: rclone push/pull | `ansible-playbook playbooks/cloud-rclone.yml -e rclone_direction=push -e rclone_remote=…` |
+| RunPod: serverless health-check | `RUNPOD_API_KEY=<key> ansible-playbook playbooks/cloud-serverless-deploy.yml` |
+| RunPod: serverless extract | `RUNPOD_API_KEY=<key> ansible-playbook playbooks/cloud-serverless-extract.yml -e sl_input=alice.mp4 -e sl_r2_src=extract/in -e sl_r2_dst=extract/faces` |
 | Tạo scoped API key | `VAST_ADMIN_KEY=<primary> ansible-playbook playbooks/provision-key.yml` |
 | Local: build CPU image | `ansible-playbook playbooks/local-build.yml` |
 | Local: extract→dedupe→sharp | `ansible-playbook playbooks/local-extract.yml -e fs_input=alice.mp4 -e fs_ws=alice` |
@@ -26,6 +28,9 @@ Train faceswap trên GPU thuê tại [vast.ai](https://cloud.vast.ai).
 ```
 [LOCAL] extract+dedupe (A,B) ──upload──> [VAST.AI] train ──sync──> [Google Drive]
 [LOCAL] convert (ghép mặt) <─────────────────────────────── pull ──┘
+
+# Serverless extract (tách riêng — GPU theo job, KHÔNG dùng Vast):
+[RunPod Serverless] extract  <── input từ R2 ──  faces ──> R2 (Cloudflare)
 ```
 
 ---
@@ -232,13 +237,46 @@ ansible-playbook playbooks/cloud-rclone.yml -e rclone_direction=pull -e rclone_r
 
 ---
 
+## 5. Serverless extract — RunPod + Cloudflare R2
+
+Extract faces theo **job, scale-to-zero** trên [RunPod Serverless](https://runpod.io) (tách hẳn khỏi train trên Vast). Worker kéo input từ **Cloudflare R2** (S3-compatible) bằng `rclone copy`, extract trên GPU, đẩy faces ngược lại R2.
+
+> **Khác Vast Cloud Copy:** `rclone copy` **đồng bộ** (block tới khi xong) → không cần vòng lặp poll status. Storage là **R2** thay vì Google Drive. Không có bước "deploy" — endpoint tạo **1 lần** trong RunPod console, playbook chỉ health-check.
+
+### Setup 1 lần
+
+1. Tạo serverless endpoint trong **RunPod console** (image: `ghcr.io/tranngoclai/faceswap-sl:<tag>`) → ghi lại `RUNPOD_ENDPOINT_ID`.
+2. Đặt **endpoint secrets** (R2 credentials, dùng cho rclone trên worker):
+   `R2_BUCKET`, `RCLONE_CONFIG_R2_TYPE=s3`, `RCLONE_CONFIG_R2_PROVIDER=Cloudflare`,
+   `RCLONE_CONFIG_R2_ENDPOINT=https://<account_id>.r2.cloudflarestorage.com`,
+   `RCLONE_CONFIG_R2_ACCESS_KEY_ID`, `RCLONE_CONFIG_R2_SECRET_ACCESS_KEY`.
+3. Lưu `RUNPOD_API_KEY` ở control machine: `RUNPOD_API_KEY=<key> ansible-playbook playbooks/provision-deploy-key.yml` (→ `~/.config/runpod/key`, chmod 600).
+4. Set `rp_endpoint_id` (và `r2_bucket`, `r2_endpoint`) trong `ansible/group_vars/cloud.yml`.
+
+### Chạy
+
+```bash
+cd ansible
+# Health-check endpoint
+RUNPOD_API_KEY=<key> ansible-playbook playbooks/cloud-serverless-deploy.yml
+# Submit 1 job (worker: R2 -> extract -> R2)
+RUNPOD_API_KEY=<key> ansible-playbook playbooks/cloud-serverless-extract.yml \
+  -e sl_input=alice.mp4 -e sl_r2_src=extract/in -e sl_r2_dst=extract/faces
+```
+
+Tham số extract dùng chung `fs_*` (detector/aligner/extract_size/extract_norm/dedupe). Client POST `/runsync` → block tới khi job xong (timeout `sl_timeout`, mặc định 600s) → in JSON kết quả `{ok, input, faces, r2_dst}`.
+
+---
+
 ## Tham chiếu lệnh nhanh
 
 Tất cả qua Ansible trong `ansible/` (chi tiết: [`ansible/README.md`](../ansible/README.md)). Cấu hình ở `group_vars/`, override bằng `-e`.
 
 **Local:** `local-build` | `local-extract` (detect→dedupe→sharp→review) | `local-dedupe` | `local-sharp` | `local-convert`. Var: `fs_ws`, `fs_input`, `fs_ref_dir`, `fs_dedup_threshold`, `fs_blur_threshold`, `fs_detector`/`fs_aligner`, `fs_local_backend` (docker|native).
 
-**Cloud:** `cloud-setup` | `cloud-train` | `cloud-board` | `cloud-cloudsync` | `cloud-rclone` | `provision-key`. Var: `faceswap_req_file`, `fs_faces_a/fs_faces_b`, `fs_train_model_dir`, `fs_trainer`, `fs_batch_size`.
+**Cloud (Vast):** `cloud-setup` | `cloud-train` | `cloud-board` | `cloud-cloudsync` | `cloud-rclone` | `provision-key`. Var: `faceswap_req_file`, `fs_faces_a/fs_faces_b`, `fs_train_model_dir`, `fs_trainer`, `fs_batch_size`.
+
+**Serverless (RunPod + R2):** `cloud-serverless-deploy` (health-check) | `cloud-serverless-extract` | `provision-deploy-key` (lưu RunPod key). Var: `rp_endpoint_id`, `r2_bucket`, `r2_endpoint`, `sl_input`, `sl_r2_src`, `sl_r2_dst`, `sl_timeout`. Env: `RUNPOD_API_KEY`.
 
 ---
 
