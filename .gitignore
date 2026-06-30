@@ -89,6 +89,7 @@ app/.env
 !app/
 !app/main.py
 !app/.env.example
+!app/requirements.txt
 
 # App env
 app/.env
