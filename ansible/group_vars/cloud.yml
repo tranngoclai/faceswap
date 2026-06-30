@@ -58,7 +58,7 @@ rp_endpoint_id: "6kpdf1l7s6jq7t"              # RunPod endpoint ID
 # Cloudflare R2 storage. Credentials (RCLONE_CONFIG_R2_*) are RunPod endpoint
 # secrets set in the RunPod console — never stored here.
 # r2_bucket is passed to the submit script so the client knows which bucket.
-r2_bucket: "faceswap"
+r2_bucket: "faceswap-storage"
 
 # Submit-job params (override with -e).
 sl_input: "alice.mp4"                         # media filename inside sl_r2_src

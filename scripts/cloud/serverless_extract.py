@@ -70,19 +70,18 @@ async def _run(cmd: str, stream: bool = False) -> str:
 async def _r2_download(r2_src: str, local_dir: str) -> None:
     """rclone copy r2:<bucket>/<r2_src> <local_dir> — blocks until done."""
     remote = shlex.quote(f"r2:{R2_BUCKET}/{r2_src}")
-    await _run(
-        f"rclone copy {remote} {shlex.quote(local_dir)} --progress",
-        stream=True,
-    )
+    # capture output (not stream) so rclone errors appear in the job error message
+    out = await _run(f"rclone copy {remote} {shlex.quote(local_dir)} -v")
+    if out:
+        print(f"[rclone download] {out}", flush=True)
 
 
 async def _r2_upload(local_dir: str, r2_dst: str) -> None:
     """rclone copy <local_dir> r2:<bucket>/<r2_dst> — blocks until done."""
     remote = shlex.quote(f"r2:{R2_BUCKET}/{r2_dst}")
-    await _run(
-        f"rclone copy {shlex.quote(local_dir)} {remote} --progress",
-        stream=True,
-    )
+    out = await _run(f"rclone copy {shlex.quote(local_dir)} {remote} -v")
+    if out:
+        print(f"[rclone upload] {out}", flush=True)
 
 
 def _safe_input_path(in_dir: str, input_name: str) -> str:
