@@ -60,18 +60,7 @@ RUN pip install --no-cache-dir --break-system-packages \
         runpod \
     && rm -rf /tmp/requirements
 
-# 4. Pre-download faceswap models so workers don't fetch them on each cold start.
-#    Runs headless extract on an empty dir — faceswap downloads + caches models
-#    then exits cleanly (no faces found is not an error at this stage).
-RUN mkdir -p /tmp/model-warmup && \
-    cd ${FACESWAP_DIR} && \
-    FACESWAP_BACKEND=nvidia KERAS_BACKEND=torch \
-    python faceswap.py extract \
-        -i /tmp/model-warmup -o /tmp/model-warmup \
-        -D retinaface -A hrnet || true && \
-    rm -rf /tmp/model-warmup
-
-# 5. Worker scripts (small, change independently of deps).
+# 4. Worker scripts (small, change independently of deps).
 COPY scripts/cloud/dedupe_faces.py ${WORK_ROOT}/dedupe_faces.py
 COPY scripts/cloud/serverless_extract.py ${WORK_ROOT}/serverless_extract.py
 
