@@ -44,7 +44,7 @@ RUN git clone --depth 1 "${FACESWAP_REPO}" "${FACESWAP_DIR}" \
 #    does not re-clone the repo, and a repo change does not re-run pip).
 COPY requirements/_requirements_base.txt requirements/requirements_nvidia_12.txt \
      /tmp/requirements/
-RUN pip install --no-cache-dir \
+RUN pip install --no-cache-dir --break-system-packages \
         -r /tmp/requirements/requirements_nvidia_12.txt \
     && rm -rf /tmp/requirements
 
