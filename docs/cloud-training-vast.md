@@ -266,6 +266,26 @@ RUNPOD_API_KEY=<key> ansible-playbook playbooks/cloud-serverless-extract.yml \
 
 Tham số extract dùng chung `fs_*` (detector/aligner/extract_size/extract_norm/dedupe). Client POST `/runsync` → block tới khi job xong (timeout `sl_timeout`, mặc định 600s) → in JSON kết quả `{ok, input, faces, r2_dst}`.
 
+### Gradio UI (thay thế CLI)
+
+`app/main.py` — giao diện web upload video, submit job, xem kết quả mà không cần CLI.
+
+```bash
+# Cài deps (1 lần)
+./fsenv/bin/pip install gradio python-dotenv
+
+# Copy template và điền giá trị
+cp app/.env.example app/.env
+# chỉnh app/.env: RUNPOD_API_KEY, RUNPOD_ENDPOINT_ID, R2_BUCKET, RCLONE_CONFIG_R2_*
+
+./fsenv/bin/python3 app/main.py
+# -> mở http://127.0.0.1:7860
+```
+
+Env vars được load từ `app/.env` (dùng `python-dotenv`). Template đầy đủ ở `app/.env.example`. File `app/.env` đã được gitignore.
+
+Flow: upload video → `rclone copyto` lên `R2:<bucket>/uploads/<id>/<filename>` → POST `/runsync` → hiện face count + đường dẫn R2 output + raw JSON. Tham số extract (detector/aligner/extract_size/extract_norm/dedupe/timeout) chỉnh trong **Advanced Options** trên UI.
+
 ---
 
 ## Tham chiếu lệnh nhanh
