@@ -36,10 +36,9 @@ RUN apt-get update \
         python-is-python3 \
     && rm -rf /var/lib/apt/lists/*
 
-# 1b. rclone (R2 transfers). Direct GitHub release download works in Docker;
-#     the rclone.org install script fails in some build environments (exit 4).
+# 1b. rclone (R2 transfers). rclone.org CDN ships the current static binary;
 #     R2 chunked upload support requires rclone >= 1.62.
-RUN curl -fsSL https://github.com/rclone/rclone/releases/latest/download/rclone-current-linux-amd64.zip \
+RUN curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip \
         -o /tmp/rclone.zip \
     && unzip /tmp/rclone.zip -d /tmp/rclone \
     && cp /tmp/rclone/rclone-*-linux-amd64/rclone /usr/bin/rclone \
