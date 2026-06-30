@@ -1,0 +1,8 @@
+---
+# Build the local faceswap CPU Docker image (Intel-Mac extract/convert).
+#   ansible-playbook playbooks/local-build.yml
+- name: Build faceswap CPU image
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - faceswap_image

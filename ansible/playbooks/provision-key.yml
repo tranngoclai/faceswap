@@ -1,0 +1,9 @@
+---
+# Mint a minimal-permission (cloud-copy only) vast.ai API key on the control machine.
+#   VAST_ADMIN_KEY=<primary> ansible-playbook playbooks/provision-key.yml
+#   VAST_ADMIN_KEY=<primary> ansible-playbook playbooks/provision-key.yml -e set_account_env_var=true
+- name: Provision scoped vast cloud-copy key
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - vast_cloudcopy_key

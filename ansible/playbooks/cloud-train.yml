@@ -1,0 +1,8 @@
+---
+# Start headless training in a tmux session on the instance.
+#   ansible-playbook playbooks/cloud-train.yml -e fs_trainer=original -e fs_batch_size=16
+- name: Faceswap training
+  hosts: cloud
+  gather_facts: false
+  roles:
+    - faceswap_train

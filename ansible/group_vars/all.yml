@@ -1,0 +1,55 @@
+---
+# ============================================================================
+# Central faceswap config. Override any value at run time with -e, e.g.:
+#   ansible-playbook playbooks/local-extract.yml -e fs_input=alice.mp4 -e fs_ws=alice
+# ============================================================================
+
+# Faceswap repo + interpreter on the target host.
+faceswap_repo_url: "https://github.com/deepfakes/faceswap.git"
+faceswap_dir: "/root/faceswap"            # cloud default; local plays override to repo root
+faceswap_backend_engine: "nvidia"          # FACESWAP_BACKEND (nvidia on GPU, cpu locally)
+keras_backend: "torch"                      # KERAS_BACKEND — this fork runs Keras 3 on PyTorch
+
+# Workspace: all artifacts for one identity live under workspace/<fs_ws>/.
+fs_input: "my1.mp4"                          # source folder of frames OR a single video
+fs_ws: "{{ (fs_input | basename | splitext | first) }}"
+fs_ws_dir: "workspace/{{ fs_ws }}"
+
+# Identity filter (multi-face media): curated single-identity reference folder.
+fs_ref_dir: "{{ fs_ws_dir }}/ref"
+fs_ref_threshold: "0.60"
+
+# Extract quality knobs (balanced high-quality defaults).
+fs_detector: "retinaface"                    # retinaface | s3fd (max, slow) | mtcnn | cv2-dnn
+fs_aligner: "hrnet"                          # hrnet (best) | fan | cv2-dnn
+fs_masker: ""                                # "" skip | bisenet-fp | vgg-clear
+fs_extract_size: 512
+fs_min_size: 0                               # drop faces < N% of frame short side (0 = off)
+fs_extract_norm: "hist"                      # none | hist | clahe | mean
+fs_extract_every_n: 1                        # sample every Nth frame
+
+# Dedupe (thin near-identical faces) + sharpness (drop blurry).
+fs_dedupe: true
+fs_dedup_threshold: 6                         # Hamming bits on 64-bit dHash; 0 = keep all
+fs_blur_threshold: 60                         # min Laplacian variance; 0 = report only
+fs_keep_raw: false
+
+# Extract review flow output dirs.
+fs_review_dir: "{{ fs_ws_dir }}/review"
+fs_faces_out: "{{ fs_ws_dir }}/faces"        # standalone dedupe/sharp input
+
+# Convert knobs.
+fs_output: "{{ fs_ws_dir }}/converted"
+fs_model_dir: "{{ fs_ws_dir }}/model"
+fs_alignments: ""                            # "" = let faceswap auto-detect
+fs_aligned_dir: ""
+fs_writer: "ffmpeg"                          # ffmpeg | opencv | pillow
+fs_color_adj: "avg-color"                    # avg-color | color-transfer | match-hist | none
+fs_mask_type: "extended"
+fs_output_scale: 100
+
+# Local Docker image (Intel-Mac CPU path). backend: docker | native
+fs_local_backend: "docker"
+fs_image: "faceswap-cpu:local"
+fs_platform: "linux/amd64"
+fs_docker_cache_volume: "faceswap-fs-cache"

@@ -1,0 +1,24 @@
+---
+# Mirrors setup-vast.sh `sync` / `pull`: rclone copy between the model dir and a
+# remote (e.g. gdrive:faceswap-model). Direction via rclone_direction: push|pull.
+# (No first-class rclone module exists, so this uses the command module.)
+
+- name: Require an rclone remote
+  ansible.builtin.assert:
+    that: rclone_remote | length > 0
+    fail_msg: "Set rclone_remote, e.g. -e rclone_remote=gdrive:faceswap-model"
+
+- name: Ensure model dir exists
+  ansible.builtin.file:
+    path: "{{ fs_train_model_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: "rclone {{ rclone_direction }} model dir"
+  ansible.builtin.command:
+    cmd: >-
+      rclone copy
+      {{ (rclone_direction == 'pull') | ternary(rclone_remote, fs_train_model_dir) }}
+      {{ (rclone_direction == 'pull') | ternary(fs_train_model_dir, rclone_remote) }}
+  register: rclone_run
+  changed_when: "'Transferred:' in rclone_run.stderr or rclone_run.rc == 0"

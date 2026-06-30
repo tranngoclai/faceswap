@@ -1,0 +1,9 @@
+---
+# Apply a trained model onto source media -> swapped output (local).
+#   ansible-playbook playbooks/local-convert.yml -e fs_ws=alice
+#   ansible-playbook playbooks/local-convert.yml -e fs_local_backend=native   # Apple Silicon/Linux
+- name: Faceswap local convert
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - faceswap_convert

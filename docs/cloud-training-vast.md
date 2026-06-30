@@ -1,15 +1,27 @@
 # Cloud Training trên vast.ai — Quy trình tổng hợp
 
-Train faceswap trên GPU thuê tại [vast.ai](https://cloud.vast.ai). 3 script ở repo root:
+Train faceswap trên GPU thuê tại [vast.ai](https://cloud.vast.ai).
 
-| Script | Chạy ở đâu | Lệnh |
-|--------|-----------|------|
-| **`docker-faceswap.sh`** | Local qua Docker (**bắt buộc trên Intel Mac**) | build / extract / dedupe / convert / shell |
-| **`convert-faces.sh`** | Local có torch native (Apple Silicon / Linux) | extract / convert |
-| **`setup-vast.sh`** | Instance cloud | install / check / train / board / sync / pull |
+> **⚙️ Đã chuyển toàn bộ setup/deploy sang Ansible** (`ansible/`). Các bash script cũ
+> (`setup-vast.sh`, `create-cloudcopy-key.sh`, `docker-faceswap.sh`, `convert-faces.sh`)
+> **đã gỡ**. Lệnh chi tiết xem **[`ansible/README.md`](../ansible/README.md)**. Bảng ánh xạ:
 
-> **Backend:** PyTorch 2.9 + Keras 3 (KHÔNG còn TensorFlow). Train cần **NVIDIA GPU + CUDA**.
+| Việc | Lệnh Ansible (chạy trong `ansible/`) |
+|------|--------------------------------------|
+| Cloud: install + GPU check | `ansible-playbook playbooks/cloud-setup.yml` |
+| Cloud: train (tmux) | `ansible-playbook playbooks/cloud-train.yml` |
+| Cloud: TensorBoard | `ansible-playbook playbooks/cloud-board.yml` |
+| Cloud: auto cloud-sync cron | `VAST_API_KEY=<scoped> ansible-playbook playbooks/cloud-cloudsync.yml` |
+| Cloud: rclone push/pull | `ansible-playbook playbooks/cloud-rclone.yml -e rclone_direction=push -e rclone_remote=…` |
+| Tạo scoped API key | `VAST_ADMIN_KEY=<primary> ansible-playbook playbooks/provision-key.yml` |
+| Local: build CPU image | `ansible-playbook playbooks/local-build.yml` |
+| Local: extract→dedupe→sharp | `ansible-playbook playbooks/local-extract.yml -e fs_input=alice.mp4 -e fs_ws=alice` |
+| Local: dedupe / sharp riêng | `ansible-playbook playbooks/local-dedupe.yml` · `local-sharp.yml` |
+| Local: convert (ghép mặt) | `ansible-playbook playbooks/local-convert.yml -e fs_ws=alice` |
+
+> **Backend:** PyTorch + Keras 3 (KHÔNG còn TensorFlow). Train cần **NVIDIA GPU + CUDA**.
 > **Phân vai:** extract/convert nhẹ → chạy **local**; train nặng → **vast.ai GPU**.
+> Apple Silicon/Linux có torch native: thêm `-e fs_local_backend=native` (bỏ Docker).
 
 ```
 [LOCAL] extract+dedupe (A,B) ──upload──> [VAST.AI] train ──sync──> [Google Drive]
