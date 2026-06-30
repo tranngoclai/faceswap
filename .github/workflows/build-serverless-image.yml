@@ -85,11 +85,9 @@ jobs:
             org.opencontainers.image.title=faceswap-sl
             org.opencontainers.image.description=Faceswap serverless worker (CUDA 12.6 + torch cu126 + faceswap)
 
-      # zstd: faster, smaller layer export than gzip.
-      # force-compression=false keeps already-gzipped CUDA base layers as-is
-      # and only emits the new dep + repo layers as zstd — same as facefusion-runpod-worker.
-      # No GHA layer cache: the image rebuilds rarely (deps/repo changes only),
-      # and restoring/exporting multi-GB layers adds more time than it saves.
+      # Use standard gzip (Docker format) so RunPod workers can pull the image.
+      # zstd OCI format causes "manifest unknown" on older Docker daemons used
+      # by RunPod GPU workers.
       - name: Build and push
         id: build
         uses: docker/build-push-action@v6
@@ -99,7 +97,7 @@ jobs:
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=image,compression=zstd,compression-level=10,force-compression=false,push=true
+          push: true
           provenance: false
 
       - name: Summary
