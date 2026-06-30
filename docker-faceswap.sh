@@ -67,12 +67,12 @@ EXTRACT_EVERY_N="${EXTRACT_EVERY_N:-1}"       # sample every Nth frame (>1 cuts 
 FACES_OUT="${FACES_OUT:-$WS_DIR/faces}"        # standalone `dedupe` input folder
 DEDUP_OUT="${DEDUP_OUT:-}"                     # standalone `dedupe` output (default: <FACES_OUT>_dedup)
 DEDUP_THRESHOLD="${DEDUP_THRESHOLD:-6}"        # Hamming distance on 64-bit dHash.
-                                              #   lower = stricter (drops more); 0 = no dedupe (keep all).
+                                              #   higher = more aggressive (drops more); 0 = no dedupe (keep all).
                                               #   ~4-6 thins slow-motion runs; ~10+ very aggressive.
 
 # --- sharpness filter (drop blurry / out-of-focus faces) ---
 SHARP_OUT="${SHARP_OUT:-}"                     # standalone `sharp` output (default: <FACES_OUT>_sharp)
-BLUR_THRESHOLD="${BLUR_THRESHOLD:-0}"          # min Laplacian variance; faces below = blurry, dropped.
+BLUR_THRESHOLD="${BLUR_THRESHOLD:-60}"         # min Laplacian variance; faces below = blurry, dropped.
                                               #   0 = REPORT mode (print distribution, copy nothing).
                                               #   typical face crops: <50 very blurry, 100-300 ok, >300 sharp.
 
@@ -128,7 +128,11 @@ ensure_image() {
 # passed straight to faceswap.py.
 run_fs() {
   ensure_image
+  # KERAS_BACKEND=torch: this fork runs Keras 3 on PyTorch. Without it Keras
+  # defaults to the tensorflow backend and crashes (no TF in CPU image) the
+  # moment a keras-based plugin loads, e.g. the identity/ref filter (-f/-l).
   docker run --rm --platform "$PLATFORM" \
+    -e KERAS_BACKEND=torch \
     -v "$FS_DIR":/fs -w /fs \
     -v faceswap-fs-cache:/fs/.fs_cache \
     "$IMAGE" python faceswap.py "$@"
