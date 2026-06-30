@@ -95,19 +95,44 @@ def _r2_download_sample(r2_path: str, r2_bucket: str, local_dir: str, limit: int
 
 
 def _submit_job(payload: dict, timeout: int) -> dict:
-    """POST to RunPod /runsync and return the parsed JSON response."""
+    """/runsync then poll /status if job is still IN_PROGRESS.
+
+    RunPod's /runsync waits up to ~90s server-side. Longer jobs return
+    IN_PROGRESS with a job ID; we then poll /status/{id} until COMPLETED/FAILED.
+    """
+    import time
+
     api_key = _cfg("RUNPOD_API_KEY")
     endpoint_id = _cfg("RUNPOD_ENDPOINT_ID")
     api_base = _cfg("RUNPOD_API_BASE", "https://api.runpod.ai/v2")
-    url = f"{api_base}/{endpoint_id}/runsync"
+    headers = {"Authorization": f"Bearer {api_key}"}
+
     resp = requests.post(
-        url,
+        f"{api_base}/{endpoint_id}/runsync",
         json=payload,
-        headers={"Authorization": f"Bearer {api_key}"},
+        headers=headers,
         timeout=timeout,
     )
     resp.raise_for_status()
-    return resp.json()
+    result = resp.json()
+
+    # Poll until terminal status when runsync returns before job finishes
+    job_id = result.get("id")
+    deadline = time.monotonic() + timeout
+    poll_interval = 5  # seconds between polls
+    while result.get("status") == "IN_PROGRESS" and job_id:
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"Job {job_id} still IN_PROGRESS after {timeout}s")
+        time.sleep(poll_interval)
+        status_resp = requests.get(
+            f"{api_base}/{endpoint_id}/status/{job_id}",
+            headers=headers,
+            timeout=30,
+        )
+        status_resp.raise_for_status()
+        result = status_resp.json()
+
+    return result
 
 
 # --- Core extract function --------------------------------------------------
@@ -149,7 +174,7 @@ def run_extract(
         yield ("Uploading", f"Uploading {filename} to R2 ({r2_key})…", "", [])
         _r2_upload(video_path, r2_key, r2_bucket)
 
-        yield ("Running", "Video uploaded. Submitting extract job to RunPod…", "", [])
+        yield ("Running", "Video uploaded. Submitting extract job to RunPod (polling until done)…", "", [])
         payload = {
             "input": {
                 "input_name": filename,
