@@ -18,6 +18,10 @@
 !/tools.py
 !/update_deps.py
 
+# Cloud training + extract/convert: migrated to Ansible (ansible/).
+!/ansible/
+!/ansible/**
+
 # Support files
 !/.github/
 !/.github/workflows/
@@ -26,6 +30,11 @@
 !.install/**
 !config/
 !.readthedocs.yml
+!.dockerignore
+!/docker/
+!/docker/**/
+!/docker/**/*.dockerfile
+!/docker/**/Dockerfile
 !docs/
 !docs/_static/
 !docs/_static/*.png
@@ -55,6 +64,8 @@
 !plugins/**/*.py
 !scripts/
 !scripts/*.py
+!scripts/**/
+!scripts/**/*.py
 !tools/
 !tools/**/
 !tools/**/*.py
