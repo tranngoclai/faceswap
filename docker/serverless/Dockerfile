@@ -28,6 +28,7 @@ RUN apt-get update \
         ca-certificates \
         curl \
         ffmpeg \
+        unzip \
         git \
         python3-pip \
         python3-tk \
@@ -35,9 +36,15 @@ RUN apt-get update \
         python-is-python3 \
     && rm -rf /var/lib/apt/lists/*
 
-# 1b. rclone (R2 transfers). Official installer ships the latest static binary;
+# 1b. rclone (R2 transfers). Direct GitHub release download works in Docker;
+#     the rclone.org install script fails in some build environments (exit 4).
 #     R2 chunked upload support requires rclone >= 1.62.
-RUN curl -fsSL https://rclone.org/install.sh | bash
+RUN curl -fsSL https://github.com/rclone/rclone/releases/latest/download/rclone-current-linux-amd64.zip \
+        -o /tmp/rclone.zip \
+    && unzip /tmp/rclone.zip -d /tmp/rclone \
+    && cp /tmp/rclone/rclone-*-linux-amd64/rclone /usr/bin/rclone \
+    && chmod 755 /usr/bin/rclone \
+    && rm -rf /tmp/rclone /tmp/rclone.zip
 
 # 2. Clone faceswap. Drop .git to shrink the layer.
 #    A version bump here only invalidates layers 2+ (not the apt layer).
