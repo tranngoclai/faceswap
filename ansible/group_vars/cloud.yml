@@ -56,7 +56,7 @@ rclone_remote: ""
 # ---------------------------------------------------------------------------
 sl_python: "python3"                          # interpreter with the vast SDK installed
 sl_endpoint_name: "faceswap-extract"
-sl_base_image: "ghcr.io/tranngoclai/faceswap-sl:cu126"  # prebuilt; build via: git tag sl-<ver> && git push
+sl_base_image: "ghcr.io/tranngoclai/faceswap-sl:1.0.2"  # prebuilt; build via: git tag sl-<ver> && git push
 # sl_req_file / sl_repo_url removed: deps + repo are baked into sl_base_image.
 # Override sl_base_image to "vastai/base-image:cuda-12.8-auto" to fall back to slow cold-start build.
 sl_connection_id: "{{ cc_connection_id }}"    # Drive cloud connection (vastai show connections)
