@@ -129,6 +129,12 @@ async def _extract_async(job_input: dict) -> dict:
         _stage(f"1/4 download {r2_src} -> worker")
         await _r2_download(r2_src, in_dir)
 
+        if not os.path.exists(input_path):
+            raise FileNotFoundError(
+                f"Input file not found after download: {input_name!r}. "
+                f"Ensure the file exists at R2 path {r2_src}/{input_name}"
+            )
+
         # 2. Extract faces on GPU. Stream output so progress shows live.
         _stage(f"2/4 extract {input_name} (D={detector} A={aligner})")
         extract_cmd = (
