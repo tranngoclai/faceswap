@@ -55,10 +55,10 @@ rclone_remote: ""
 rp_python: "{{ lookup('env', 'HOME') }}/.local/pipx/venvs/runpod/bin/python3"
 rp_endpoint_id: "szpzua1mkk97fa"              # RunPod endpoint ID
 
-# Cloudflare R2 storage (S3-compatible). r2_access_key_id / r2_secret_access_key
-# are RunPod endpoint secrets — never set them here.
+# Cloudflare R2 storage. Credentials (RCLONE_CONFIG_R2_*) are RunPod endpoint
+# secrets set in the RunPod console — never stored here.
+# r2_bucket is passed to the submit script so the client knows which bucket.
 r2_bucket: "faceswap"
-r2_endpoint: "https://3b6a3f4e4f1da7bddcc1c266712e83a6.r2.cloudflarestorage.com"
 
 # Submit-job params (override with -e).
 sl_input: "alice.mp4"                         # media filename inside sl_r2_src
