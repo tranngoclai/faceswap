@@ -1,0 +1,28 @@
+---
+# Mirrors setup-vast.sh `cloudsync`: on-instance cron runs `vastai cloud copy`
+# to push the data dir to a Drive connection. Key via VAST_API_KEY (no key file).
+
+- name: Require a scoped API key
+  ansible.builtin.assert:
+    that: vast_api_key | length > 0
+    fail_msg: "Set VAST_API_KEY (scoped cloud-copy key), e.g. export VAST_API_KEY=... before running."
+
+- name: Deploy cloud-sync runner
+  ansible.builtin.template:
+    src: cloud-sync.sh.j2
+    dest: /root/cloud-sync.sh
+    mode: "0755"
+
+# cron supports environment lines; cron jobs run with a minimal env so the key
+# must be set here for `vastai` to authenticate.
+- name: Put VAST_API_KEY in the crontab environment
+  ansible.builtin.cron:
+    name: VAST_API_KEY
+    env: true
+    value: "{{ vast_api_key }}"
+
+- name: Schedule the cloud-copy sync
+  ansible.builtin.cron:
+    name: faceswap-cloud-sync
+    minute: "*/{{ cc_interval_min }}"
+    job: "/root/cloud-sync.sh"

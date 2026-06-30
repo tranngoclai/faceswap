@@ -1,0 +1,26 @@
+---
+# Mirrors setup-vast.sh `check`: verify torch sees the GPU.
+
+- name: Query torch CUDA availability
+  ansible.builtin.command:
+    cmd: >-
+      {{ faceswap_python }} -c
+      "import torch,json;print(json.dumps({'torch':torch.__version__,
+      'cuda':torch.cuda.is_available(),
+      'gpu':torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+      'cuda_ver':torch.version.cuda}))"
+  environment:
+    FACESWAP_BACKEND: "{{ faceswap_backend_engine }}"
+    KERAS_BACKEND: "{{ keras_backend }}"
+  register: torch_check
+  changed_when: false
+
+- name: Parse result
+  ansible.builtin.set_fact:
+    torch_info: "{{ torch_check.stdout | from_json }}"
+
+- name: Assert CUDA is available
+  ansible.builtin.assert:
+    that: torch_info.cuda
+    fail_msg: "CUDA not available — check requirements file vs instance CUDA."
+    success_msg: "GPU OK: {{ torch_info.gpu }} (torch {{ torch_info.torch }}, CUDA {{ torch_info.cuda_ver }})"

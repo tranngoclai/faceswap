@@ -1,0 +1,9 @@
+---
+# Extract -> dedupe -> sharpness into a timestamped review folder (local).
+#   ansible-playbook playbooks/local-extract.yml -e fs_input=alice.mp4 -e fs_ws=alice
+#   ansible-playbook playbooks/local-extract.yml -e fs_input=my1.mp4 -e fs_dedupe=false
+- name: Faceswap local extract
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - faceswap_extract

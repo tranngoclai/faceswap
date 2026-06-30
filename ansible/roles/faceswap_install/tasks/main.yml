@@ -1,0 +1,32 @@
+---
+# Mirrors setup-vast.sh `install`: clone repo, install deps, patch preview path.
+
+- name: Clone or update faceswap repo
+  ansible.builtin.git:
+    repo: "{{ faceswap_repo_url }}"
+    dest: "{{ faceswap_dir }}"
+    version: master
+    update: true
+    force: false
+
+- name: Upgrade pip
+  ansible.builtin.pip:
+    name: pip
+    state: latest
+    executable: "{{ faceswap_pip }}"
+
+- name: Install faceswap requirements (torch + deps for the selected CUDA)
+  ansible.builtin.pip:
+    requirements: >-
+      {{ faceswap_dir }}/{{ faceswap_skip_torch
+         | ternary('requirements/_requirements_base.txt', faceswap_req_file) }}
+    executable: "{{ faceswap_pip }}"
+
+# Upstream writes the training preview next to faceswap.py. Redirect it into the
+# model dir so it lands under /workspace (picked up by Cloud Sync). Idempotent:
+# the regexp no longer matches once replaced.
+- name: Redirect training preview into the model dir
+  ansible.builtin.replace:
+    path: "{{ faceswap_dir }}/scripts/train.py"
+    regexp: 'img_file = os\.path\.join\(script_path, img\)'
+    replace: 'img_file = os.path.join(self._args.model_dir if os.path.isdir(self._args.model_dir) else script_path, img)'

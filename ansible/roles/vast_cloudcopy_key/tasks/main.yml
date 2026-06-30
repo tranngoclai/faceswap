@@ -1,0 +1,43 @@
+---
+# Mirrors create-cloudcopy-key.sh: mint a MINIMAL-permission (cloud-copy only)
+# vast.ai API key via the REST API, optionally set it as an account env-var.
+# Run on localhost. Admin/primary key required (browser-stored key cannot mint).
+
+- name: Require an admin/primary vast key
+  ansible.builtin.assert:
+    that: vast_admin_key | length > 0
+    fail_msg: "Set VAST_ADMIN_KEY (admin/primary key) in the environment first."
+
+- name: Create scoped cloud-copy API key
+  ansible.builtin.uri:
+    url: "https://console.vast.ai/api/v0/auth/apikeys/"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ vast_admin_key }}"
+    body_format: json
+    body:
+      name: "{{ vast_key_name }}"
+      permissions:
+        api:
+          instance_write:
+            api.commands.rclone:
+              POST: {}
+    status_code: 200
+  register: key_response
+
+- name: Set scoped key fact
+  ansible.builtin.set_fact:
+    vast_scoped_key: "{{ key_response.json.key }}"
+
+# Optional: store as a vast ACCOUNT env-var so future instances auto-get it.
+- name: Set vast account env-var VAST_API_KEY
+  ansible.builtin.command:
+    cmd: "vastai create env-var VAST_API_KEY {{ vast_scoped_key }}"
+  environment:
+    VAST_API_KEY: "{{ vast_admin_key }}"
+  when: set_account_env_var | bool
+  changed_when: true
+
+- name: Show scoped key (use as VAST_API_KEY for cloudsync)
+  ansible.builtin.debug:
+    msg: "Scoped cloud-copy key (id {{ key_response.json.id }}): {{ vast_scoped_key }}"

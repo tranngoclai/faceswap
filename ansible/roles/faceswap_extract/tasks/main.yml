@@ -1,0 +1,129 @@
+---
+# Mirrors docker-faceswap.sh `extract`: extract -> dedupe -> sharpness, into a
+# fresh TIMESTAMPED review folder (never overwrites). Supports docker | native.
+
+- name: Check identity-filter ref dir
+  ansible.builtin.stat:
+    path: "{{ fs_repo_root }}/{{ fs_ref_dir }}"
+  register: ref_stat
+
+- name: Compute run paths
+  ansible.builtin.set_fact:
+    fs_stamp: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+
+- name: Compute derived paths + args
+  ansible.builtin.set_fact:
+    fs_run: "{{ fs_review_dir }}/{{ fs_stamp }}"
+    fs_raw: "{{ fs_review_dir }}/{{ fs_stamp }}_raw"
+    fs_blurry: "{{ fs_review_dir }}/{{ fs_stamp }}_blurry"
+    fs_ref_args: >-
+      {{ ('-f ' ~ fs_ref_dir ~ ' -l ' ~ fs_ref_threshold)
+         if (fs_ref_dir | length > 0) and (ref_stat.stat.isdir | default(false))
+         else '' }}
+
+- name: Assert source media exists
+  ansible.builtin.stat:
+    path: "{{ fs_repo_root }}/{{ fs_input }}"
+  register: src_media
+  failed_when: not src_media.stat.exists
+
+- name: Ensure raw output dir
+  ansible.builtin.file:
+    path: "{{ fs_repo_root }}/{{ fs_raw }}"
+    state: directory
+    mode: "0755"
+
+# ---- extract (raw) ----------------------------------------------------------
+- name: Extract faces (docker)
+  community.docker.docker_container:
+    name: "faceswap-extract"
+    image: "{{ fs_image }}"
+    platform: "{{ fs_platform }}"
+    working_dir: /fs
+    env:
+      KERAS_BACKEND: "{{ keras_backend }}"
+    volumes:
+      - "{{ fs_repo_root }}:/fs"
+      - "{{ fs_docker_cache_volume }}:/fs/.fs_cache"
+    command: >-
+      python faceswap.py extract -i {{ fs_input }} -o {{ fs_raw }}
+      -D {{ fs_detector }} -A {{ fs_aligner }} -z {{ fs_extract_size }} -O {{ fs_extract_norm }}
+      {{ ('-M ' ~ fs_masker) if fs_masker | length > 0 else '' }}
+      {{ ('-m ' ~ fs_min_size) if fs_min_size | int > 0 else '' }}
+      {{ ('-N ' ~ fs_extract_every_n) if fs_extract_every_n | int > 1 else '' }}
+      {{ fs_ref_args }}
+    detach: false
+    cleanup: true
+  when: fs_local_backend == 'docker'
+
+- name: Extract faces (native)
+  ansible.builtin.command:
+    chdir: "{{ fs_repo_root }}"
+    cmd: >-
+      {{ local_python }} faceswap.py extract -i {{ fs_input }} -o {{ fs_raw }}
+      -D {{ fs_detector }} -A {{ fs_aligner }} -z {{ fs_extract_size }} -O {{ fs_extract_norm }}
+      {{ ('-M ' ~ fs_masker) if fs_masker | length > 0 else '' }}
+      {{ ('-m ' ~ fs_min_size) if fs_min_size | int > 0 else '' }}
+      {{ ('-N ' ~ fs_extract_every_n) if fs_extract_every_n | int > 1 else '' }}
+      {{ fs_ref_args }}
+  environment:
+    KERAS_BACKEND: "{{ keras_backend }}"
+    FACESWAP_BACKEND: "{{ faceswap_backend_engine }}"
+  changed_when: true
+  when: fs_local_backend == 'native'
+
+# ---- dedupe (or just promote raw -> run) ------------------------------------
+- name: Dedupe raw -> review folder
+  ansible.builtin.include_tasks: run-python-helper.yml
+  vars:
+    helper_script: "dedupe-faces.py"
+    helper_env:
+      SRC: "{{ fs_raw }}"
+      OUT: "{{ fs_run }}"
+      THRESH: "{{ fs_dedup_threshold }}"
+  when: fs_dedupe | bool and (fs_dedup_threshold | int) > 0
+
+- name: Promote raw -> review folder (dedupe off)
+  ansible.builtin.command: "mv {{ fs_repo_root }}/{{ fs_raw }} {{ fs_repo_root }}/{{ fs_run }}"
+  changed_when: true
+  when: not (fs_dedupe | bool and (fs_dedup_threshold | int) > 0)
+
+- name: Drop pre-dedupe raw faces
+  ansible.builtin.file:
+    path: "{{ fs_repo_root }}/{{ fs_raw }}"
+    state: absent
+  when: fs_dedupe | bool and (fs_dedup_threshold | int) > 0 and not (fs_keep_raw | bool)
+
+# ---- sharpness filter (optional) --------------------------------------------
+- name: Stage review -> blurry for sharpness filtering
+  ansible.builtin.command: "mv {{ fs_repo_root }}/{{ fs_run }} {{ fs_repo_root }}/{{ fs_blurry }}"
+  changed_when: true
+  when: (fs_blur_threshold | int) > 0
+
+- name: Sharpness filter blurry -> review folder
+  ansible.builtin.include_tasks: run-python-helper.yml
+  vars:
+    helper_script: "blur-filter.py"
+    helper_env:
+      SRC: "{{ fs_blurry }}"
+      OUT: "{{ fs_run }}"
+      THRESH: "{{ fs_blur_threshold }}"
+  when: (fs_blur_threshold | int) > 0
+
+- name: Drop blurry faces
+  ansible.builtin.file:
+    path: "{{ fs_repo_root }}/{{ fs_blurry }}"
+    state: absent
+  when: (fs_blur_threshold | int) > 0 and not (fs_keep_raw | bool)
+
+- name: Count reviewed faces
+  ansible.builtin.find:
+    paths: "{{ fs_repo_root }}/{{ fs_run }}"
+    patterns: "*.png"
+  register: reviewed
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - "Review folder ready -> {{ fs_run }} ({{ reviewed.matched }} faces)"
+      - "NEXT: curate it, then MOVE keepers into {{ fs_ws_dir }}/faces/ (train data / ALIGNED_DIR)."

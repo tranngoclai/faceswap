@@ -1,0 +1,45 @@
+---
+# Mirrors setup-vast.sh `train`: launch headless training in a tmux session
+# (survives SSH drops). Idempotent — skips if the session already exists.
+
+- name: Assert face sets exist
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: face_dirs
+  failed_when: not face_dirs.stat.exists or not face_dirs.stat.isdir
+  loop:
+    - "{{ fs_faces_a }}"
+    - "{{ fs_faces_b }}"
+
+- name: Ensure model dir exists
+  ansible.builtin.file:
+    path: "{{ fs_train_model_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Check for an existing training session
+  ansible.builtin.command: "tmux has-session -t {{ fs_train_session }}"
+  register: train_session
+  changed_when: false
+  failed_when: false
+
+- name: Start headless training in tmux
+  ansible.builtin.command:
+    cmd: >-
+      tmux new-session -d -s {{ fs_train_session }}
+      '{{ faceswap_python }} {{ faceswap_dir }}/faceswap.py train
+      -A {{ fs_faces_a }} -B {{ fs_faces_b }} -m {{ fs_train_model_dir }}
+      -t {{ fs_trainer }} -b {{ fs_batch_size }} -i {{ fs_iterations }}
+      -s {{ fs_save_interval }} -I {{ fs_snapshot_interval }} -w'
+  environment:
+    FACESWAP_BACKEND: "{{ faceswap_backend_engine }}"
+    KERAS_BACKEND: "{{ keras_backend }}"
+    PATH: "/venv/main/bin:/opt/instance-tools/bin:/usr/local/bin:/usr/bin:/bin"
+  when: train_session.rc != 0
+  register: train_started
+
+- name: Report
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'Training started in tmux session ' ~ fs_train_session if train_started.changed
+         else 'Training session ' ~ fs_train_session ~ ' already running — left untouched.' }}

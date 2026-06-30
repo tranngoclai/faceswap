@@ -18,11 +18,9 @@
 !/tools.py
 !/update_deps.py
 
-# Cloud training helper scripts (vast.ai)
-!/setup-vast.sh
-!/convert-faces.sh
-!/docker-faceswap.sh
-!/create-cloudcopy-key.sh
+# Cloud training + extract/convert: migrated to Ansible (ansible/).
+!/ansible/
+!/ansible/**
 
 # Support files
 !/.github/

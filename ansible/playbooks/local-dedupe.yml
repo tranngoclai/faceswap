@@ -1,0 +1,17 @@
+---
+# Standalone re-thin of an existing faces folder: fs_faces_out -> fs_dedup_out.
+#   ansible-playbook playbooks/local-dedupe.yml -e fs_faces_out=workspace/alice/faces -e fs_dedup_threshold=6
+- name: Faceswap standalone dedupe
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Dedupe faces folder
+      ansible.builtin.include_role:
+        name: faceswap_extract
+        tasks_from: run-python-helper.yml
+      vars:
+        helper_script: "dedupe-faces.py"
+        helper_env:
+          SRC: "{{ fs_faces_out }}"
+          OUT: "{{ fs_dedup_out }}"
+          THRESH: "{{ fs_dedup_threshold }}"

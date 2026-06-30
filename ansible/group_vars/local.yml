@@ -1,0 +1,16 @@
+---
+# Control-machine config (Docker extract/convert + vast key provisioning).
+
+# Repo root = two levels up from playbooks/ (ansible/playbooks -> ansible -> repo).
+fs_repo_root: "{{ playbook_dir | dirname | dirname }}"
+faceswap_dir: "{{ fs_repo_root }}"           # native faceswap repo == this repo
+local_python: "python3"                       # used when fs_local_backend == native
+
+# Standalone dedupe/sharp outputs.
+fs_dedup_out: "{{ fs_faces_out }}_dedup"
+fs_sharp_out: "{{ fs_faces_out }}_sharp"
+
+# vast key provisioning (provision-key.yml). Admin/primary key from env.
+vast_admin_key: "{{ lookup('env', 'VAST_ADMIN_KEY') | default(lookup('env', 'VAST_API_KEY'), true) }}"
+vast_key_name: "faceswap-cc"
+set_account_env_var: false

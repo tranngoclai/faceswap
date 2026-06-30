@@ -1,0 +1,18 @@
+---
+# Standalone sharpness report/filter of a faces folder: fs_faces_out -> fs_sharp_out.
+#   ansible-playbook playbooks/local-sharp.yml -e fs_faces_out=workspace/alice/faces             # report (threshold 0)
+#   ansible-playbook playbooks/local-sharp.yml -e fs_faces_out=workspace/alice/faces -e fs_blur_threshold=100
+- name: Faceswap standalone sharpness
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Sharpness report/filter
+      ansible.builtin.include_role:
+        name: faceswap_extract
+        tasks_from: run-python-helper.yml
+      vars:
+        helper_script: "blur-filter.py"
+        helper_env:
+          SRC: "{{ fs_faces_out }}"
+          OUT: "{{ fs_sharp_out }}"
+          THRESH: "{{ fs_blur_threshold }}"

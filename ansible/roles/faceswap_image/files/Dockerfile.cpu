@@ -1,0 +1,11 @@
+# faceswap CPU image (Intel-Mac / local extract+convert). Deps baked in.
+FROM python:3.12-slim
+ENV PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1
+# tk: faceswap imports tkinter even for CLI. libgl1/libglib: OpenCV. ffmpeg: video writer.
+RUN apt-get update -qq \
+ && apt-get install -y -qq libgl1 libglib2.0-0 ffmpeg tk \
+ && rm -rf /var/lib/apt/lists/*
+# Copy only requirements first so source edits don't bust this layer.
+COPY requirements/ /tmp/requirements/
+RUN pip install -r /tmp/requirements/requirements_cpu.txt
+WORKDIR /fs
