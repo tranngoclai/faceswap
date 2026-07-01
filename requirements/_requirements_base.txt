@@ -2,7 +2,10 @@ packaging>=26.0
 tqdm>=4.67
 psutil>=7.2.0
 numexpr>=2.14.0
-numpy>=2.4.0
+# Cap <2.5: numpy 2.5 changed numpy.typing.NDArray internals (get_origin no longer
+# returns np.ndarray), breaking faceswap's PNG-header/alignments deserializer
+# (lib/align/objects.py) -> "value: <class 'list'> field: NDArray" on image load.
+numpy>=2.4.0,<2.5
 opencv-python>=4.13.0
 pillow>=12.2.0
 scikit-learn>=1.8.0

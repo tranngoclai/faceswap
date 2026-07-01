@@ -1,0 +1,61 @@
+---
+# Submit one extract job to the RunPod serverless endpoint (runs LOCAL). Worker
+# pulls input from Cloudflare R2, extracts faces on GPU, pushes faces back to R2.
+#   ansible-playbook playbooks/runpod-extract-faces.yml \
+#     -e sl_input=alice.mp4 -e sl_side=A -e fs_workspace_name=alice-bob-001
+# runpod_api_key is read only from ansible/group_vars/vault.yml.
+# R2 credentials (RCLONE_CONFIG_R2_*) live as RunPod endpoint secrets.
+- name: Submit faceswap serverless extract job to RunPod
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/cloud.yml
+    - ../group_vars/vault.yml
+  pre_tasks:
+    - name: Require RunPod API key
+      ansible.builtin.assert:
+        that:
+          - runpod_api_key | length > 0
+        fail_msg: "Set runpod_api_key in ansible/group_vars/vault.yml with ansible-vault."
+
+    - name: Require endpoint id
+      ansible.builtin.assert:
+        that:
+          - rp_endpoint_id | length > 0
+        fail_msg: "Set rp_endpoint_id in group_vars/cloud.yml (from RunPod console)."
+
+  tasks:
+    - name: Run serverless extract submit
+      ansible.builtin.command:
+        argv:
+          - "{{ rp_python }}"
+          - scripts/cloud/serverless_extract.py
+          - submit
+          - --input
+          - "{{ sl_input }}"
+          - --r2-src
+          - "{{ fs_workspace_name }}/source/{{ sl_side }}"
+          - --r2-dst
+          - "{{ fs_workspace_name }}/extract/{{ sl_side }}"
+          - --detector
+          - "{{ sl_detector }}"
+          - --aligner
+          - "{{ sl_aligner }}"
+          - --extract-size
+          - "{{ sl_extract_size | string }}"
+          - --extract-norm
+          - "{{ sl_extract_norm }}"
+          - --dedupe-threshold
+          - "{{ sl_dedupe_threshold | string }}"
+          - --timeout
+          - "{{ sl_timeout | string }}"
+        chdir: "{{ playbook_dir }}/../.."
+      environment:
+        RUNPOD_API_KEY: "{{ runpod_api_key }}"
+        RUNPOD_ENDPOINT_ID: "{{ rp_endpoint_id }}"
+      register: submit_out
+
+    - name: Show job result
+      ansible.builtin.debug:
+        var: submit_out.stdout_lines

@@ -1,0 +1,43 @@
+---
+# On-instance cron: rclone copy cc_sync_src -> R2 every cc_interval_min minutes.
+# R2 credentials (r2_access_key_id, r2_secret_access_key, r2_endpoint) come from
+# the ansible vault; they are injected as crontab environment lines so the cron
+# job runs with no rclone.conf file on disk.
+
+- name: Require R2 credentials
+  ansible.builtin.assert:
+    that:
+      - r2_access_key_id | length > 0
+      - r2_secret_access_key | length > 0
+      - r2_endpoint | length > 0
+    fail_msg: "Set r2_access_key_id, r2_secret_access_key, r2_endpoint in ansible/group_vars/vault.yml."
+
+- name: Require workspace name
+  ansible.builtin.assert:
+    that: fs_workspace_name | length > 0
+    fail_msg: "Pass -e fs_workspace_name=<workspace> so the sync destination R2 path is known."
+
+- name: Deploy cloud-sync runner
+  ansible.builtin.template:
+    src: cloud-sync.sh.j2
+    dest: /root/cloud-sync.sh
+    mode: "0755"
+
+# Inject R2 credentials as crontab environment lines (minimal cron env has no secrets).
+- name: Set R2 env in crontab
+  ansible.builtin.cron:
+    name: "{{ item.name }}"
+    env: true
+    value: "{{ item.value }}"
+  loop:
+    - { name: RCLONE_CONFIG_R2_TYPE,              value: "s3" }
+    - { name: RCLONE_CONFIG_R2_PROVIDER,          value: "Cloudflare" }
+    - { name: RCLONE_CONFIG_R2_ACCESS_KEY_ID,     value: "{{ r2_access_key_id }}" }
+    - { name: RCLONE_CONFIG_R2_SECRET_ACCESS_KEY, value: "{{ r2_secret_access_key }}" }
+    - { name: RCLONE_CONFIG_R2_ENDPOINT,          value: "{{ r2_endpoint }}" }
+
+- name: Schedule the R2 sync
+  ansible.builtin.cron:
+    name: faceswap-cloud-sync
+    minute: "*/{{ cc_interval_min }}"
+    job: "/root/cloud-sync.sh"

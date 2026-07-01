@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Managed by Ansible (roles/faceswap_cloudsync). Do not edit by hand.
+# RCLONE_CONFIG_R2_* env vars are injected via crontab environment lines.
+export PATH=/venv/main/bin:/usr/local/bin:/usr/bin:/bin
+ts="$(date '+%F %T')"
+out="$(rclone copy {{ cc_sync_src }} r2:{{ r2_bucket }}/{{ fs_workspace_name }}/train -v 2>&1)"
+echo "[$ts] $out" >> /root/cloud-sync.log

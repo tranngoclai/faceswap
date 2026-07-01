@@ -1,0 +1,76 @@
+---
+# Cloud-only config (the vast.ai GPU instance).
+
+# Interpreter / pip on the instance (vast base image ships a venv at /venv/main).
+faceswap_python: "/venv/main/bin/python"
+faceswap_pip: "/venv/main/bin/pip"
+
+# CUDA requirements file (match the instance CUDA): _12 = cu126, _13 = cu130.
+faceswap_req_file: "requirements/requirements_nvidia_13.txt"
+faceswap_skip_torch: false                   # true = install base deps only (keep image torch)
+
+# Training data (absolute paths under /workspace, persisted on the instance).
+fs_faces_a: "/workspace/train/input_aligned"
+fs_faces_b: "/workspace/train/output/faces_full"
+fs_train_model_dir: "/workspace/train/model"
+
+# Training hyperparameters.
+fs_trainer: "original"                        # original | phaze-a | villain | dfl-sae | ...
+fs_batch_size: 16
+fs_iterations: 1000000
+fs_save_interval: 250
+fs_snapshot_interval: 25000
+
+# TensorBoard.
+fs_tb_port: 6006
+
+# tmux session names.
+fs_train_session: "fs"
+fs_board_session: "tb"
+
+# R2 model sync cron (instance -> R2). Credentials in vault.yml.
+# Syncs cc_sync_src -> r2:<r2_bucket>/<fs_workspace_name>/train every cc_interval_min min.
+cc_sync_src: "/workspace/train"
+cc_interval_min: 10
+
+# ---------------------------------------------------------------------------
+# RunPod Serverless extract endpoint (scripts/cloud/serverless_extract.py).
+# Submit runs on the CONTROL machine (needs `pip install requests`). The worker
+# pulls input + pushes faces via `rclone copy` to/from Cloudflare R2. The
+# endpoint itself is created once in the RunPod console (no Ansible deploy).
+# ---------------------------------------------------------------------------
+# Absolute path (the `command` module does not expand ~); interpreter with `requests`.
+rp_python: "{{ lookup('env', 'HOME') }}/.local/pipx/venvs/runpod/bin/python3"
+rp_endpoint_id: "40hn4drzliia8x"
+
+# Terraform-managed endpoint config (mirrors terraform/variables.tf defaults).
+rp_workers_max: 1
+rp_idle_timeout: 10
+rp_execution_timeout_ms: 200000
+rp_scaler_type: "QUEUE_DELAY"
+rp_scaler_value: 4
+
+# Cloudflare R2. r2_bucket is the bucket name. r2_endpoint and credentials
+# (r2_access_key_id, r2_secret_access_key) live in ansible/group_vars/vault.yml.
+# TF_VAR_* equivalents (rp_r2_*) are set from the same vault at terraform apply time.
+r2_bucket: "faceswap-storage"
+# r2_access_key_id, r2_secret_access_key, r2_endpoint — defined in vault.yml
+
+# Workspace name — identifies the training session; all R2 paths are namespaced under it.
+# Pass at run time: -e fs_workspace_name=alice-bob-001
+fs_workspace_name: ""
+
+# R2 paths for face pull (cloud-pull-train-faces.yml). Source = RunPod extract output.
+r2_faces_a_src: "{{ fs_workspace_name }}/extract/A"
+r2_faces_b_src: "{{ fs_workspace_name }}/extract/B"
+
+# Submit-job params (override with -e).
+sl_input: "alice.mp4"                         # media filename inside sl_r2_src
+sl_r2_src: "extract/in"                       # R2 path holding the input (no leading slash)
+sl_r2_dst: "extract/faces"                    # R2 path to receive faces (no leading slash)
+sl_detector: "{{ fs_detector }}"
+sl_aligner: "{{ fs_aligner }}"
+sl_extract_size: "{{ fs_extract_size }}"
+sl_extract_norm: "{{ fs_extract_norm }}"
+sl_dedupe_threshold: "{{ fs_dedup_threshold }}"
+sl_timeout: 600                               # client-side wait for /runsync (seconds)

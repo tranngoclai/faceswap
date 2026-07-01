@@ -508,9 +508,15 @@ class Train():
             if self._args.write_image:
                 logger.debug("[Train] Saving preview to disk")
                 img = "training_preview.png"
-                img_file = os.path.join(script_path, img)
+                # Write the preview alongside the model (e.g. /workspace/train/model) instead of
+                # next to faceswap.py, so it lives under the synced data dir (vast.ai console /
+                # Google Drive sync of /workspace). Fall back to the script dir if model_dir is
+                # not yet available.
+                preview_dir = (self._args.model_dir
+                               if os.path.isdir(self._args.model_dir) else script_path)
+                img_file = os.path.join(preview_dir, img)
                 cv2.imwrite(img_file, image)  # pylint:disable=no-member
-                logger.debug("[Train] Saved preview to: '%s'", img)
+                logger.debug("[Train] Saved preview to: '%s'", img_file)
             if self._args.redirect_gui:
                 logger.debug("[Train] Generating preview for GUI")
                 img = TRAINING_PREVIEW

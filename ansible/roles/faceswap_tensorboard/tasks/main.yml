@@ -1,0 +1,28 @@
+---
+# Mirrors setup-vast.sh `board`: launch TensorBoard in a tmux session.
+
+- name: Check for an existing TensorBoard session
+  ansible.builtin.command:
+    argv:
+      - tmux
+      - has-session
+      - -t
+      - "{{ fs_board_session }}"
+  register: board_session
+  changed_when: false
+  failed_when: false
+
+- name: Start TensorBoard in tmux
+  ansible.builtin.command:
+    cmd: >-
+      tmux new-session -d -s {{ fs_board_session }}
+      'tensorboard --logdir {{ fs_train_model_dir }}/logs
+      --host 0.0.0.0 --port {{ fs_tb_port }}'
+  environment:
+    PATH: "/venv/main/bin:/opt/instance-tools/bin:/usr/local/bin:/usr/bin:/bin"
+  when: board_session.rc != 0
+  register: board_started
+
+- name: Report
+  ansible.builtin.debug:
+    msg: "TensorBoard on 0.0.0.0:{{ fs_tb_port }} (map this port in vast.ai)."

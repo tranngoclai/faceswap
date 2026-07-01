@@ -1,0 +1,8 @@
+---
+# Launch TensorBoard in a tmux session on the instance (port fs_tb_port).
+#   ansible-playbook playbooks/cloud-board.yml
+- name: Faceswap TensorBoard
+  hosts: cloud
+  gather_facts: false
+  roles:
+    - faceswap_tensorboard

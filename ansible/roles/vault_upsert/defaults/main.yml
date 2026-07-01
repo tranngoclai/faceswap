@@ -1,0 +1,3 @@
+---
+vault_pass_file: "~/.config/ansible/vault-pass"
+_vault_upsert_tmp: "/tmp/ansible_vault_plain.yml"

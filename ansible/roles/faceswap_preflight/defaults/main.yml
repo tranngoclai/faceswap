@@ -1,0 +1,3 @@
+---
+preflight_min_faces: 200
+preflight_min_disk_gb: 20
