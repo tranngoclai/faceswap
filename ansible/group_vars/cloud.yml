@@ -9,6 +9,24 @@ faceswap_pip: "/venv/main/bin/pip"
 faceswap_req_file: "requirements/requirements_nvidia_13.txt"
 faceswap_skip_torch: false                   # true = install base deps only (keep image torch)
 
+# Workspace name — must be unique per run; reusing overwrites prior train artifacts.
+fs_workspace_name: "alice-bob-001"
+
+# Google Drive root (configured by faceswap_cloudsync role).
+gdrive_remote_name: "gdrive"
+gdrive_root_folder_id: ""                         # REQUIRED: shared folder ID set by operator
+gdrive_root: "{{ gdrive_remote_name }}:"
+gdrive_workspace: "{{ gdrive_root }}{{ fs_workspace_name }}"
+gdrive_source_a: "{{ gdrive_workspace }}/source/A"
+gdrive_source_b: "{{ gdrive_workspace }}/source/B"
+gdrive_extract_a: "{{ gdrive_workspace }}/extract/A"
+gdrive_extract_b: "{{ gdrive_workspace }}/extract/B"
+gdrive_train_root: "{{ gdrive_workspace }}/train"
+gdrive_train_input_a: "{{ gdrive_train_root }}/input_A"
+gdrive_train_input_b: "{{ gdrive_train_root }}/input_B"
+gdrive_train_model: "{{ gdrive_train_root }}/model"
+gdrive_sa_file: "/root/.config/gdrive/service-account.json"
+
 # Training data (absolute paths under /workspace, persisted on the instance).
 fs_faces_a: "/workspace/train/input_aligned"
 fs_faces_b: "/workspace/train/output/faces_full"
@@ -28,30 +46,27 @@ fs_tb_port: 6006
 fs_train_session: "fs"
 fs_board_session: "tb"
 
-# rclone auto-sync (instance -> Google Drive via service account vault).
-cc_sync_src: "/workspace/train"               # local dir to push
-cc_interval_min: 10                           # cron frequency in minutes
-rclone_remote: "gdrive:faceswap-train"        # rclone remote:path destination
+# rclone auto-sync — push model artifacts back to Drive.
+cc_sync_src: "{{ fs_train_model_dir }}"
+cc_sync_dst: "{{ gdrive_train_model }}"
+cc_interval_min: 10
+
+# VastAI instance ID (updated by provision-vast-instance.yml — do not edit manually).
+cc_instance_id: ""
 
 # ---------------------------------------------------------------------------
 # RunPod Serverless extract endpoint (scripts/cloud/serverless_extract.py).
 # Submit runs on the CONTROL machine (needs `pip install requests`). The worker
-# pulls input + pushes faces via `rclone copy` to/from Cloudflare R2. The
-# endpoint itself is created once in the RunPod console (no Ansible deploy).
+# pulls input + pushes faces via `rclone copy` to/from Google Drive using a
+# service account (GDRIVE_SA_JSON_B64 RunPod endpoint secret).
 # ---------------------------------------------------------------------------
 # Absolute path (the `command` module does not expand ~); interpreter with `requests`.
 rp_python: "{{ lookup('env', 'HOME') }}/.local/pipx/venvs/runpod/bin/python3"
 rp_endpoint_id: "6kpdf1l7s6jq7t"              # RunPod endpoint ID
 
-# Cloudflare R2 storage. Credentials (RCLONE_CONFIG_R2_*) are RunPod endpoint
-# secrets set in the RunPod console — never stored here.
-# r2_bucket is passed to the submit script so the client knows which bucket.
-r2_bucket: "faceswap-storage"
-
-# Submit-job params (override with -e).
-sl_input: "alice.mp4"                         # media filename inside sl_r2_src
-sl_r2_src: "extract/in"                       # R2 path holding the input (no leading slash)
-sl_r2_dst: "extract/faces"                    # R2 path to receive faces (no leading slash)
+# Serverless extract submit params (override with -e).
+sl_input: "alice.mp4"                         # filename inside gdrive_source_a or _b
+sl_side: "A"                                  # A or B
 sl_detector: "{{ fs_detector }}"
 sl_aligner: "{{ fs_aligner }}"
 sl_extract_size: "{{ fs_extract_size }}"

@@ -35,42 +35,56 @@ Train faceswap trên GPU thuê tại [vast.ai](https://cloud.vast.ai).
 
 ---
 
-## Lệnh chạy hoàn chỉnh (end-to-end)
-
-Ví dụ ghép mặt **alice → bob** (mỗi người 1 workspace riêng dưới `workspace/<WS>/`).
+## Quy trình operator hoàn chỉnh (Drive-first, 13 bước)
 
 ```bash
 cd ansible
 ansible-galaxy collection install -r requirements.yml          # 1 lần duy nhất
 
-# === 0. LOCAL: build image Docker (1 lần) ===
-ansible-playbook playbooks/local-build.yml
+# 1. Mã hoá / rotate SA key → Ansible Vault
+ansible-playbook playbooks/provision-gdrive-sa-key.yml
 
-# === 1. LOCAL: ảnh tham chiếu + extract (lọc 1 người + dedupe tự động) ===
-mkdir -p ../workspace/alice/ref ../workspace/bob/ref
-#   bỏ 5-20 ảnh alice vào workspace/alice/ref/, bob vào workspace/bob/ref/ (đa dạng góc/sáng)
-ansible-playbook playbooks/local-extract.yml -e fs_ws=alice -e fs_input=alice.mp4
-ansible-playbook playbooks/local-extract.yml -e fs_ws=bob   -e fs_input=bob.mp4
+# 2. Chia sẻ Drive root folder cho SA email (xem output bước 1 để lấy email)
+#    Ghi folder ID vào group_vars/cloud.yml: gdrive_root_folder_id
 
-# === 2. LOCAL: duyệt review -> gom data train ===
-#   xoá mặt xấu trong workspace/<ws>/review/<ts>/ rồi move keepers sang workspace/<ws>/faces/
+# 3. Cấu hình rclone gdrive local (SA key lấy từ vault — dùng bước 12 bên dưới)
 
-# === 3. CLOUD (vast.ai): tạo key + setup + train + auto-sync ===
-ansible-playbook playbooks/provision-key.yml                            # admin key lấy từ config
-ansible-playbook playbooks/cloud-setup.yml                              # clone + deps + GPU check
+# 4. Đặt endpoint secrets trong RunPod console:
+#    GDRIVE_SA_JSON_B64   — SA JSON base64 (xem provision-gdrive-sa-key.yml output)
+#    GDRIVE_ROOT_FOLDER_ID — folder ID từ bước 2
+
+# 5. Upload video nguồn qua App → Drive <workspace>/source/A|B/
+#    (App tự đặt fs_workspace_name và side; ghi fs_workspace_name vào cloud.yml)
+
+# 6. RunPod extract A + B (đợi tới khi job terminal)
+ansible-playbook playbooks/cloud-serverless-extract.yml -e sl_input=alice.mp4 -e sl_side=A
+ansible-playbook playbooks/cloud-serverless-extract.yml -e sl_input=bob.mp4   -e sl_side=B
+
+# 7. Duyệt mặt trong Drive extract/A|B/
+#    Copy approved faces → Drive train/input_A/ và train/input_B/
+
+# 8. Provision VastAI instance + setup
+ansible-playbook playbooks/provision-vast-instance.yml
+ansible-playbook playbooks/cloud-setup.yml
+
+# 9. Sync Drive inputs → VastAI /workspace/train/
+ansible-playbook playbooks/cloud-sync-train-inputs.yml
+
+# 10. Preflight: kiểm tra faces / disk / GPU trước khi train
+ansible-playbook playbooks/cloud-train-preflight.yml
+
+# 11. Train (tmux, chạy nền)
 ansible-playbook playbooks/cloud-train.yml -e fs_trainer=original -e fs_batch_size=16
-ansible-playbook playbooks/cloud-cloudsync.yml                          # cron đẩy /workspace -> Drive
-ansible-playbook playbooks/cloud-board.yml                              # TensorBoard (port 6006)
-#   (faces A/B + model dir cấu hình ở group_vars/cloud.yml: fs_faces_a/fs_faces_b/fs_train_model_dir)
+ansible-playbook playbooks/cloud-board.yml                              # TensorBoard port 6006 (tuỳ chọn)
 
-# === 4. LOCAL: pull model + convert (ghép mặt) ===
-ansible-playbook playbooks/cloud-rclone.yml -e rclone_direction=pull -e rclone_remote=gdrive:faceswap-alice
+# 12. Cài cron auto-sync model → Drive mỗi 10 phút
+ansible-playbook playbooks/cloud-cloudsync.yml
+#    -> /root/cloud-sync.sh; log: /root/cloud-sync.log
+
+# 13. Xong → stop/destroy instance; pull model để convert local
 ansible-playbook playbooks/local-convert.yml -e fs_ws=alice -e fs_input=alice.mp4
-#   -> kết quả ở workspace/alice/converted/
+#    -> kết quả ở workspace/alice/converted/
 ```
-
-> **Backend native** (Apple Silicon/Linux): thêm `-e fs_local_backend=native` cho các play local (bỏ Docker).
-> **Bản gọn nhất** (1 video): bỏ `-e fs_ws=...`, `fs_ws` tự lấy từ tên file (`my1.mp4` → `my1`).
 
 ---
 
@@ -186,40 +200,23 @@ ansible-playbook playbooks/cloud-board.yml                                      
 
 ## 3. Auto-sync model lên Google Drive
 
-Hai cách. **Khuyến nghị 3a** (vast Cloud Copy qua cron) — chạy trên instance, độc lập máy local.
-
-### 3a. vast.ai Cloud Copy qua cron (khuyến nghị)
-
-Tận dụng **cloud connection** sẵn trong vast.ai console (Settings → Cloud connections, vd Google Drive) → cron trên instance tự gọi API đẩy `/workspace` lên Drive mỗi 10 phút.
+`cloud-cloudsync.yml` cài **rclone** lên instance, inject SA key từ vault, đặt **cron mỗi 10 phút** đẩy `/workspace/train/model` → Drive `<workspace>/train/model/`.
 
 ```bash
-# Bước 0 (LOCAL): tạo API key quyền tối thiểu (admin key lấy từ default config)
-ansible-playbook playbooks/provision-key.yml
-# Hoặc chỉ cập nhật Ansible Vault, không publish account env-var:
-ansible-playbook playbooks/provision-key.yml -e set_account_env_var=false
-
-# Cài cron. GDRIVE_SA_JSON lấy từ Vast account secrets. IDs ở group_vars/cloud.yml.
+# Cài rclone + cron trên instance (chạy sau cloud-setup, bước 12 trong quy trình)
 ansible-playbook playbooks/cloud-cloudsync.yml
-#   -> /root/cloud-sync.sh + crontab */10; log: /root/cloud-sync.log
+#   -> /root/cloud-sync.sh; crontab */10; log: /root/cloud-sync.log
 ```
 
-Permission tối thiểu (đã kiểm chứng): `instance_write → api.commands.rclone → POST` (route `/api/v0/commands/rclone/`). Key lộ cũng **không destroy instance / tiêu credit** được.
+Xác thực Drive qua **service account JSON** (lưu trong `google-account-vault.yml`, AES256-encrypted; inject vào instance qua Ansible). Không cần token browser — SA cần quyền `Editor` trên thư mục Drive gốc đã share (bước 2).
 
-**Auth qua env var, không file key:** vastai đọc key theo thứ tự `--api-key` → **`VAST_API_KEY`** → file `~/.config/vastai/vast_api_key`. `faceswap_cloudsync` đặt `VAST_API_KEY` vào **header crontab** (module `cron`); set thêm account env-var để instance mới tự có.
-
-> ⚠️ Lưu ý:
-> - Tạo key con phải dùng **admin/primary key** (key trình duyệt lưu sẵn → `401 not authorized to create ... with these permissions`).
-> - Endpoint đúng là `api.commands.rclone` (không phải `api.instance.cloud-copy` → 401).
-> - **PATH cho cron:** vastai pre-install ở `/opt/instance-tools/bin` (KHÔNG ở venv) → `cloud-sync.sh` set PATH gồm path này.
-> - Gỡ cron khi xong: `ssh vast-training "crontab -r"`.
+> Gỡ cron khi xong: `ssh vast-training "crontab -r"`.
 
 ### 3b. rclone push/pull (thủ công)
 
-Nếu thích rclone: cấu hình remote 1 lần (LOCAL `rclone authorize "drive"` → INSTANCE `rclone config create gdrive drive config_is_local=false token='{...}'`), rồi:
-
 ```bash
-ansible-playbook playbooks/cloud-rclone.yml -e rclone_direction=push -e rclone_remote=gdrive:faceswap-alice
-ansible-playbook playbooks/cloud-rclone.yml -e rclone_direction=pull -e rclone_remote=gdrive:faceswap-alice
+ansible-playbook playbooks/cloud-rclone.yml -e rclone_direction=push -e rclone_remote=gdrive:faceswap-model
+ansible-playbook playbooks/cloud-rclone.yml -e rclone_direction=pull -e rclone_remote=gdrive:faceswap-model
 ```
 
 ---
@@ -319,12 +316,13 @@ Tất cả qua Ansible trong `ansible/` (chi tiết: [`ansible/README.md`](../an
 ## Checklist
 
 - [ ] `cd ansible && ansible-galaxy collection install -r requirements.yml` (1 lần)
-- [ ] `local-build.yml` (1 lần) + bỏ ảnh tham chiếu vào `workspace/<ws>/ref/`
-- [ ] `local-extract.yml` mỗi nhân dạng → duyệt review → move sang `faces/`
-- [ ] Thuê instance `vastai/base-image` CUDA 13 → `cloud-setup.yml` thấy GPU OK
-- [ ] `provision-key.yml` → `cloud-cloudsync.yml` (auto-sync Drive)
-- [ ] `cloud-train.yml` (tmux); theo dõi loss qua `cloud-board.yml`
-- [ ] `cloud-rclone.yml -e rclone_direction=pull` → `local-convert.yml`
+- [ ] `provision-gdrive-sa-key.yml` → share Drive folder → ghi `gdrive_root_folder_id` vào `cloud.yml`
+- [ ] Đặt `GDRIVE_SA_JSON_B64` + `GDRIVE_ROOT_FOLDER_ID` trong RunPod endpoint secrets
+- [ ] Upload video nguồn qua App → Drive `source/A|B/`; ghi `fs_workspace_name` vào `cloud.yml`
+- [ ] `cloud-serverless-extract.yml` A + B → duyệt `extract/A|B/` → copy vào `train/input_A|B/`
+- [ ] `provision-vast-instance.yml` → `cloud-setup.yml` → `cloud-sync-train-inputs.yml`
+- [ ] `cloud-train-preflight.yml` → `cloud-train.yml` → `cloud-cloudsync.yml` (cron)
+- [ ] Xong → destroy instance; `local-convert.yml` để ghép mặt
 
 ---
 

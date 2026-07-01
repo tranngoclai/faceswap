@@ -15,7 +15,7 @@
   vars_files:
     - ../group_vars/vault.yml
   environment:
-    VAST_API_KEY: "{{ vast_api_key }}"
+    VAST_API_KEY: "{{ vast_admin_key }}"
   vars:
     vast_gpu: "RTX_4090"           # GPU model name as used in vast search
     vast_gpu_fallback: "RTX_3090"  # fallback if primary GPU has no offers
@@ -30,8 +30,8 @@
     - name: Require Vast API key
       ansible.builtin.assert:
         that:
-          - vast_api_key | length > 0
-        fail_msg: "Set vast_api_key in ansible/group_vars/vault.yml with ansible-vault."
+          - vast_admin_key | length > 0
+        fail_msg: "Set vast_admin_key in ansible/group_vars/vault.yml with ansible-vault."
 
     - name: Check vastai CLI is installed
       ansible.builtin.command:

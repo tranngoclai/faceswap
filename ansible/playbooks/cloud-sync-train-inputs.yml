@@ -1,0 +1,78 @@
+---
+# Sync approved training inputs from Google Drive to VastAI training dirs.
+# Run AFTER operator curates faces in Drive:
+#   gdrive:<ws>/train/input_A/ -> {{ fs_faces_a }}
+#   gdrive:<ws>/train/input_B/ -> {{ fs_faces_b }}
+#
+# Usage:
+#   ansible-playbook playbooks/cloud-sync-train-inputs.yml \
+#     -e fs_workspace_name=alice-bob-001
+- name: Sync Drive train inputs to VastAI
+  hosts: cloud
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/cloud.yml
+    - ../group_vars/google-account-vault.yml
+
+  pre_tasks:
+    - name: Require workspace name
+      ansible.builtin.assert:
+        that: fs_workspace_name | length > 0
+        fail_msg: "Pass -e fs_workspace_name=<name>"
+
+    - name: Require gdrive root folder ID
+      ansible.builtin.assert:
+        that: gdrive_root_folder_id | length > 0
+        fail_msg: "Set gdrive_root_folder_id in group_vars/cloud.yml"
+
+  roles:
+    - faceswap_cloudsync
+
+  tasks:
+    - name: Ensure VastAI face dirs exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ fs_faces_a }}"
+        - "{{ fs_faces_b }}"
+
+    - name: Sync input_A from Drive to VastAI
+      ansible.builtin.command:
+        argv:
+          - rclone
+          - copy
+          - "{{ gdrive_train_input_a }}"
+          - "{{ fs_faces_a }}"
+          - --progress
+      changed_when: true
+
+    - name: Sync input_B from Drive to VastAI
+      ansible.builtin.command:
+        argv:
+          - rclone
+          - copy
+          - "{{ gdrive_train_input_b }}"
+          - "{{ fs_faces_b }}"
+          - --progress
+      changed_when: true
+
+    - name: Count synced faces A
+      ansible.builtin.find:
+        paths: "{{ fs_faces_a }}"
+        patterns: "*.png"
+      register: faces_a_count
+
+    - name: Count synced faces B
+      ansible.builtin.find:
+        paths: "{{ fs_faces_b }}"
+        patterns: "*.png"
+      register: faces_b_count
+
+    - name: Report sync results
+      ansible.builtin.debug:
+        msg:
+          - "Side A: {{ faces_a_count.matched }} faces → {{ fs_faces_a }}"
+          - "Side B: {{ faces_b_count.matched }} faces → {{ fs_faces_b }}"

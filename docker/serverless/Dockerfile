@@ -36,8 +36,9 @@ RUN apt-get update \
         python-is-python3 \
     && rm -rf /var/lib/apt/lists/*
 
-# 1b. rclone (R2 transfers). rclone.org CDN ships the current static binary;
-#     R2 chunked upload support requires rclone >= 1.62.
+# 1b. rclone (Google Drive transfers). rclone.org CDN ships the current static binary.
+#     Worker decodes GDRIVE_SA_JSON_B64 endpoint secret at startup and configures
+#     the gdrive rclone remote at runtime. No rclone.conf needed in the image.
 RUN curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip \
         -o /tmp/rclone.zip \
     && unzip /tmp/rclone.zip -d /tmp/rclone \

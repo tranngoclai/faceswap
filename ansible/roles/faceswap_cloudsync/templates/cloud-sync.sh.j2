@@ -5,5 +5,5 @@
 export HOME=/root
 export PATH=/venv/main/bin:/usr/local/bin:/usr/bin:/bin
 ts="$(date '+%F %T')"
-out="$(rclone copy {{ cc_sync_src }} {{ rclone_remote }} --transfers 4 2>&1)"
+out="$(rclone copy {{ cc_sync_src }} {{ cc_sync_dst }} --transfers 4 2>&1)"
 echo "[$ts] $out" >> /root/cloud-sync.log

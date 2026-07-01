@@ -1,10 +1,10 @@
 ---
 # Submit one extract job to the RunPod serverless endpoint (runs LOCAL). Worker
-# pulls input from R2, extracts faces on GPU, pushes faces back to R2.
+# pulls input from Google Drive, extracts faces on GPU, pushes faces back to Drive.
 #   ansible-playbook playbooks/cloud-serverless-extract.yml \
-#     -e sl_input=alice.mp4 -e sl_r2_src=extract/in -e sl_r2_dst=extract/faces
+#     -e sl_input=alice.mp4 -e sl_side=A -e fs_workspace_name=alice-bob-001
 # runpod_api_key is read only from ansible/group_vars/vault.yml.
-# R2 credentials live as RunPod endpoint secrets — no env input needed here.
+# Drive credentials (GDRIVE_SA_JSON_B64) live as RunPod endpoint secrets.
 - name: Submit faceswap serverless extract job to RunPod
   hosts: localhost
   gather_facts: false
@@ -34,10 +34,10 @@
           - submit
           - --input
           - "{{ sl_input }}"
-          - --r2-src
-          - "{{ sl_r2_src }}"
-          - --r2-dst
-          - "{{ sl_r2_dst }}"
+          - --gdrive-src
+          - "{{ fs_workspace_name }}/source/{{ sl_side }}"
+          - --gdrive-dst
+          - "{{ fs_workspace_name }}/extract/{{ sl_side }}"
           - --detector
           - "{{ sl_detector }}"
           - --aligner
@@ -54,7 +54,6 @@
       environment:
         RUNPOD_API_KEY: "{{ runpod_api_key }}"
         RUNPOD_ENDPOINT_ID: "{{ rp_endpoint_id }}"
-        R2_BUCKET: "{{ r2_bucket }}"
       register: submit_out
 
     - name: Show job result

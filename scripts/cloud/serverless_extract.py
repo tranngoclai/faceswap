@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RunPod Serverless: faceswap extract on GPU + transfer faces via Cloudflare R2.
+"""RunPod Serverless: faceswap extract on GPU + transfer faces via Google Drive.
 
 One file, two roles (the worker image runs this same module, so it MUST stay a
 valid importable module — snake_case name, no top-level side effects):
@@ -8,27 +8,28 @@ valid importable module — snake_case name, no top-level side effects):
     submit   POST one job to the RunPod endpoint, print the result
 
 Flow inside a worker (one extract job):
-    R2 --(rclone copy)--> /workspace/sl/jobs/<id>/in
+    gdrive:<gdrive_src> --(rclone copy)--> /workspace/sl/jobs/<id>/in
         --> python faceswap.py extract --> .../faces (+ optional dedupe)
-        --(rclone copy)--> R2/<r2_dst>
+        --(rclone copy)--> gdrive:<gdrive_dst>
 
-rclone copy is synchronous — it blocks until the transfer finishes, so there is
-no status-polling loop (unlike vast cloud copy). R2 is S3-compatible; rclone is
-configured entirely via RCLONE_CONFIG_R2_* env vars set as RunPod endpoint
-secrets, so no rclone.conf file is needed on the worker.
+Auth: the worker reads GDRIVE_SA_JSON_B64 (RunPod endpoint secret), decodes it
+to /tmp/gdrive-sa-worker.json (mode 0600), then configures the rclone gdrive
+remote at startup. No rclone.conf file is needed on the worker container.
 
-Auth is split: RUNPOD_API_KEY (control machine) submits jobs and is never baked
-into the image; the worker's R2 credentials (RCLONE_CONFIG_R2_*) are RunPod
-endpoint secrets, never committed to the repo.
+Control-machine submit: RUNPOD_API_KEY must be set in the environment. If
+/runsync returns IN_PROGRESS the CLI polls /status/{id} until terminal.
 
 Requires `requests` locally for submit; `runpod` + `rclone` on the worker image.
 """
 import argparse
 import asyncio
+import base64
 import json
 import os
 import shutil
 import shlex
+import stat
+import subprocess
 import uuid
 from pathlib import PurePosixPath
 
@@ -37,11 +38,40 @@ from pathlib import PurePosixPath
 RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "")
 RUNPOD_ENDPOINT_ID = os.environ.get("RUNPOD_ENDPOINT_ID", "")
 RUNPOD_API_BASE = os.environ.get("RUNPOD_API_BASE", "https://api.runpod.ai/v2")
-R2_BUCKET = os.environ.get("R2_BUCKET", "faceswap")
+
+GDRIVE_REMOTE = os.environ.get("GDRIVE_REMOTE", "gdrive")
+GDRIVE_SA_JSON_B64 = os.environ.get("GDRIVE_SA_JSON_B64", "")
+GDRIVE_ROOT_FOLDER_ID = os.environ.get("GDRIVE_ROOT_FOLDER_ID", "")
+GDRIVE_SA_FILE = "/tmp/gdrive-sa-worker.json"
 
 FACESWAP_DIR = os.environ.get("FACESWAP_DIR", "/workspace/faceswap")
 WORK_ROOT = os.environ.get("WORK_ROOT", "/workspace/sl")
 DEDUPE_REMOTE = f"{WORK_ROOT}/dedupe_faces.py"
+
+
+def _setup_gdrive() -> None:
+    """Decode GDRIVE_SA_JSON_B64 to disk and configure rclone gdrive remote.
+
+    No-op when GDRIVE_SA_JSON_B64 is empty (pre-configured rclone.conf is used).
+    Security: never prints decoded content; writes SA file with 0600 permissions.
+    """
+    if not GDRIVE_SA_JSON_B64:
+        return
+
+    sa_json = base64.b64decode(GDRIVE_SA_JSON_B64)
+    with open(GDRIVE_SA_FILE, "wb") as fh:
+        fh.write(sa_json)
+    os.chmod(GDRIVE_SA_FILE, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+
+    args = [
+        "rclone", "config", "create", GDRIVE_REMOTE, "drive",
+        "scope=drive",
+        f"service_account_file={GDRIVE_SA_FILE}",
+    ]
+    if GDRIVE_ROOT_FOLDER_ID:
+        args.append(f"root_folder_id={GDRIVE_ROOT_FOLDER_ID}")
+
+    subprocess.run(args, check=True, capture_output=True)
 
 
 async def _run(cmd: str, stream: bool = False) -> str:
@@ -65,20 +95,19 @@ async def _run(cmd: str, stream: bool = False) -> str:
     return text
 
 
-# --- rclone helpers (Cloudflare R2, synchronous) ----------------------------
+# --- rclone helpers (Google Drive) ------------------------------------------
 
-async def _r2_download(r2_src: str, local_dir: str) -> None:
-    """rclone copy r2:<bucket>/<r2_src> <local_dir> — blocks until done."""
-    remote = shlex.quote(f"r2:{R2_BUCKET}/{r2_src}")
-    # capture output (not stream) so rclone errors appear in the job error message
+async def _gdrive_download(gdrive_src: str, local_dir: str) -> None:
+    """rclone copy gdrive:<gdrive_src> <local_dir>"""
+    remote = shlex.quote(f"{GDRIVE_REMOTE}:{gdrive_src}")
     out = await _run(f"rclone copy {remote} {shlex.quote(local_dir)} -v")
     if out:
         print(f"[rclone download] {out}", flush=True)
 
 
-async def _r2_upload(local_dir: str, r2_dst: str) -> None:
-    """rclone copy <local_dir> r2:<bucket>/<r2_dst> — blocks until done."""
-    remote = shlex.quote(f"r2:{R2_BUCKET}/{r2_dst}")
+async def _gdrive_upload(local_dir: str, gdrive_dst: str) -> None:
+    """rclone copy <local_dir> gdrive:<gdrive_dst>"""
+    remote = shlex.quote(f"{GDRIVE_REMOTE}:{gdrive_dst}")
     out = await _run(f"rclone copy {shlex.quote(local_dir)} {remote} -v")
     if out:
         print(f"[rclone upload] {out}", flush=True)
@@ -95,17 +124,17 @@ def _safe_input_path(in_dir: str, input_name: str) -> str:
 # --- RunPod handler (worker role) -------------------------------------------
 
 async def _extract_async(job_input: dict) -> dict:
-    """Extract faces from one media file pulled from R2, push faces back to R2.
+    """Extract faces from one media file pulled from Drive, push faces back to Drive.
 
     job_input keys:
-        input_name   media filename inside r2_src (video or frame dir)
-        r2_src       R2 path holding input_name
-        r2_dst       R2 path to receive the extracted faces
+        input_name   media filename inside gdrive_src (video or frame dir)
+        gdrive_src   Drive path holding input_name (relative to root_folder_id)
+        gdrive_dst   Drive path to receive the extracted faces
         detector, aligner, extract_size, extract_norm, dedupe_threshold (optional)
     """
     input_name = job_input["input_name"]
-    r2_src = job_input["r2_src"]
-    r2_dst = job_input["r2_dst"]
+    gdrive_src = job_input["gdrive_src"]
+    gdrive_dst = job_input["gdrive_dst"]
     detector = job_input.get("detector", "retinaface")
     aligner = job_input.get("aligner", "hrnet")
     extract_size = int(job_input.get("extract_size", 512))
@@ -120,22 +149,19 @@ async def _extract_async(job_input: dict) -> dict:
 
     input_path = _safe_input_path(in_dir, input_name)
 
-    # Stage markers print to the worker log so a long job is observably alive.
     def _stage(msg: str) -> None:
         print(f"[sl] {msg}", flush=True)
 
     try:
-        # 1. R2 -> worker. rclone copy is synchronous; no poll loop needed.
-        _stage(f"1/4 download {r2_src} -> worker")
-        await _r2_download(r2_src, in_dir)
+        _stage(f"1/4 download {gdrive_src} -> worker")
+        await _gdrive_download(gdrive_src, in_dir)
 
         if not os.path.exists(input_path):
             raise FileNotFoundError(
                 f"Input file not found after download: {input_name!r}. "
-                f"Ensure the file exists at R2 path {r2_src}/{input_name}"
+                f"Ensure the file exists at Drive path {gdrive_src}/{input_name}"
             )
 
-        # 2. Extract faces on GPU. Stream output so progress shows live.
         _stage(f"2/4 extract {input_name} (D={detector} A={aligner})")
         extract_cmd = (
             f"cd {shlex.quote(FACESWAP_DIR)} && python faceswap.py extract "
@@ -148,9 +174,6 @@ async def _extract_async(job_input: dict) -> dict:
         def _png_count(d: str) -> int:
             return len([f for f in os.listdir(d) if f.lower().endswith(".png")])
 
-        # 3. Optional dedupe (mirrors local dHash thinning). Skip when extract
-        # produced nothing — dedupe on an empty dir would fail the job instead
-        # of returning the intended ok:false soft-failure.
         if dedupe_threshold and int(dedupe_threshold) > 0 and _png_count(faces_dir) > 0:
             _stage(f"3/4 dedupe (thresh={int(dedupe_threshold)})")
             deduped = f"{job_root}/faces_deduped"
@@ -162,16 +185,15 @@ async def _extract_async(job_input: dict) -> dict:
 
         count = _png_count(faces_dir)
 
-        # 4. worker -> R2 (extracted faces) — skip if nothing extracted.
         if count > 0:
-            _stage(f"4/4 upload {count} faces -> {r2_dst}")
-            await _r2_upload(faces_dir, r2_dst)
+            _stage(f"4/4 upload {count} faces -> {gdrive_dst}")
+            await _gdrive_upload(faces_dir, gdrive_dst)
 
         return {
-            "ok": count > 0,  # zero faces = soft failure (bad input / no detections)
+            "ok": count > 0,
             "input": input_name,
             "faces": count,
-            "r2_dst": r2_dst if count > 0 else None,
+            "gdrive_dst": gdrive_dst if count > 0 else None,
             "log_note": "extract output streamed to worker log (RunPod console)",
         }
     finally:
@@ -187,6 +209,7 @@ def _serve() -> None:
     """Start the RunPod worker loop (blocks waiting for jobs)."""
     import runpod
 
+    _setup_gdrive()
     runpod.serverless.start({"handler": handler})
 
 
@@ -200,28 +223,42 @@ def _submit(a: argparse.Namespace) -> None:
         raise RuntimeError("RUNPOD_ENDPOINT_ID is not set — required to submit jobs.")
 
     import requests
+    import time
 
     payload = {"input": {
         "input_name": a.input,
-        "r2_src": a.r2_src,
-        "r2_dst": a.r2_dst,
+        "gdrive_src": a.gdrive_src,
+        "gdrive_dst": a.gdrive_dst,
         "detector": a.detector,
         "aligner": a.aligner,
         "extract_size": a.extract_size,
         "extract_norm": a.extract_norm,
         "dedupe_threshold": a.dedupe_threshold,
     }}
-    # /runsync blocks until the job finishes (or the client timeout elapses),
-    # so the result JSON is returned directly — no separate status poll needed.
+
     url = f"{RUNPOD_API_BASE}/{RUNPOD_ENDPOINT_ID}/runsync"
-    resp = requests.post(
-        url,
-        json=payload,
-        headers={"Authorization": f"Bearer {RUNPOD_API_KEY}"},
-        timeout=a.timeout,
-    )
+    headers = {"Authorization": f"Bearer {RUNPOD_API_KEY}"}
+    resp = requests.post(url, json=payload, headers=headers, timeout=a.timeout)
     resp.raise_for_status()
-    print(json.dumps(resp.json(), indent=2))
+    result = resp.json()
+
+    # Poll /status/{id} until terminal when runsync returns IN_PROGRESS
+    job_id = result.get("id")
+    deadline = time.monotonic() + a.timeout
+    while result.get("status") == "IN_PROGRESS" and job_id:
+        if time.monotonic() >= deadline:
+            print(json.dumps({"error": f"timeout after {a.timeout}s", "id": job_id}, indent=2))
+            return
+        time.sleep(5)
+        sr = requests.get(
+            f"{RUNPOD_API_BASE}/{RUNPOD_ENDPOINT_ID}/status/{job_id}",
+            headers=headers,
+            timeout=30,
+        )
+        sr.raise_for_status()
+        result = sr.json()
+
+    print(json.dumps(result, indent=2))
 
 
 def main() -> None:
@@ -230,9 +267,11 @@ def main() -> None:
     sub.add_parser("serve", help="start the RunPod worker loop (Docker CMD)")
 
     s = sub.add_parser("submit", help="POST one extract job to the endpoint")
-    s.add_argument("--input", required=True, help="media filename inside r2_src")
-    s.add_argument("--r2-src", dest="r2_src", required=True)
-    s.add_argument("--r2-dst", dest="r2_dst", required=True)
+    s.add_argument("--input", required=True, help="media filename inside gdrive_src")
+    s.add_argument("--gdrive-src", dest="gdrive_src", required=True,
+                   help="Drive path for input (relative to root_folder_id)")
+    s.add_argument("--gdrive-dst", dest="gdrive_dst", required=True,
+                   help="Drive path to receive extracted faces")
     s.add_argument("--detector", default="retinaface")
     s.add_argument("--aligner", default="hrnet")
     s.add_argument("--extract-size", dest="extract_size", type=int, default=512)

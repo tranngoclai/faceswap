@@ -26,16 +26,17 @@
       - rclone
       - config
       - create
-      - gdrive
+      - "{{ gdrive_remote_name }}"
       - drive
       - scope=drive
-      - service_account_file=/root/.config/gdrive/service-account.json
+      - "service_account_file={{ gdrive_sa_file }}"
+      - "root_folder_id={{ gdrive_root_folder_id }}"
   changed_when: false
 
-- name: Require rclone_remote
+- name: Require gdrive sync destination
   ansible.builtin.assert:
-    that: rclone_remote | length > 0
-    fail_msg: "Set rclone_remote in group_vars/cloud.yml, e.g. gdrive:faceswap-train"
+    that: cc_sync_dst | length > 0
+    fail_msg: "cc_sync_dst must be set (derived from gdrive_train_model in cloud.yml)."
 
 - name: Deploy cloud-sync runner
   ansible.builtin.template:
