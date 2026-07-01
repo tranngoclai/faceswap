@@ -41,7 +41,7 @@ cc_interval_min: 10
 # ---------------------------------------------------------------------------
 # Absolute path (the `command` module does not expand ~); interpreter with `requests`.
 rp_python: "{{ lookup('env', 'HOME') }}/.local/pipx/venvs/runpod/bin/python3"
-rp_endpoint_id: ""  # managed by cloud-provision-instance.yml — do not edit manually
+rp_endpoint_id: "40hn4drzliia8x"
 
 # Terraform-managed endpoint config (mirrors terraform/variables.tf defaults).
 rp_workers_max: 1

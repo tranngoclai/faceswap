@@ -1,6 +1,8 @@
 # ── RunPod serverless extract endpoint ───────────────────────────────────────
-# The endpoint is created once in the RunPod console and is NOT managed here.
-# Image updates are applied by updating runpod_template.extract (below), which
-# the endpoint references by template_id — changes propagate automatically.
+# The endpoint is NOT managed by Terraform — the RunPod provider has two bugs:
+#   1. Creates successfully (HTTP 201) but treats it as an error (expects 200)
+#   2. Post-apply consistency check fails on compute_type / vcpu_count fields
+#   3. Import is not supported by the provider
 #
-# Endpoint ID is stored in ansible/group_vars/cloud.yml (rp_endpoint_id).
+# Workflow: update runpod_template (below) to change image; the endpoint picks
+# it up automatically. Endpoint ID lives in ansible/group_vars/cloud.yml.

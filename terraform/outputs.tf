@@ -40,6 +40,6 @@ output "vast_geolocation" {
 
 # ── RunPod serverless endpoint outputs ────────────────────────────────────────
 output "runpod_template_id" {
-  description = "RunPod template ID — referenced by the endpoint (created once in RunPod console)"
+  description = "RunPod template ID — set this on the endpoint in the RunPod console"
   value       = var.enable_runpod ? runpod_template.extract[0].id : null
 }
