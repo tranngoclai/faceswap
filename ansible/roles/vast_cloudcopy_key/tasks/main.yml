@@ -1,6 +1,6 @@
 ---
-# Mint a minimal cloud-copy key and optionally store it as an encrypted Vast
-# account environment variable. Secret-bearing tasks must stay no_log.
+# Mint a minimal cloud-copy key, persist it in Ansible Vault, and optionally
+# store it as an encrypted Vast account variable. Secret-bearing tasks stay no_log.
 #
 # Route-level permission constraints (e.g. api.instance.show, api.commands.rclone)
 # are rejected by the Vast API for standard accounts. Use category-level
@@ -10,7 +10,7 @@
 - name: Require an admin/primary vast key
   ansible.builtin.assert:
     that: vast_admin_key | length > 0
-    fail_msg: "Set VAST_ADMIN_KEY (admin/primary key) in the environment first."
+    fail_msg: "Set vast_admin_key in ansible/group_vars/vault.yml with ansible-vault."
 
 - name: Create and store scoped cloud-copy credential
   block:
@@ -34,6 +34,60 @@
     - name: Hold scoped key only in memory for this play
       ansible.builtin.set_fact:
         vast_scoped_key: "{{ key_response.json.key }}"
+      no_log: true
+
+    - name: Load current vault values for key rotation
+      ansible.builtin.include_vars:
+        file: "{{ vast_vault_file }}"
+        name: _vast_vault_values
+      no_log: true
+
+    - name: Create private workspace for vault rotation
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: faceswap-vast-vault-
+      register: _vast_vault_workspace
+
+    - name: Back up current encrypted vault
+      ansible.builtin.copy:
+        src: "{{ vast_vault_file }}"
+        dest: "{{ _vast_vault_workspace.path }}/vault.yml.backup"
+        remote_src: true
+        mode: "0600"
+      register: _vast_vault_backup
+      no_log: true
+
+    - name: Write updated vault values to private workspace
+      ansible.builtin.copy:
+        content: >-
+          {{ _vast_vault_values
+             | combine({'vast_api_key': vast_scoped_key})
+             | to_nice_yaml(indent=2, sort_keys=true) }}
+        dest: "{{ _vast_vault_workspace.path }}/vault.yml"
+        mode: "0600"
+      no_log: true
+
+    - name: Encrypt updated vault
+      ansible.builtin.command:
+        argv:
+          - ansible-vault
+          - encrypt
+          - --vault-password-file
+          - "{{ vast_vault_password_file }}"
+          - --output
+          - "{{ _vast_vault_workspace.path }}/vault.yml.encrypted"
+          - "{{ _vast_vault_workspace.path }}/vault.yml"
+      environment:
+        ANSIBLE_LOCAL_TEMP: /tmp/faceswap-ansible-local
+      changed_when: true
+      no_log: true
+
+    - name: Replace vault with encrypted scoped key
+      ansible.builtin.copy:
+        src: "{{ _vast_vault_workspace.path }}/vault.yml.encrypted"
+        dest: "{{ vast_vault_file }}"
+        remote_src: true
+        mode: "0644"
       no_log: true
 
     - name: Read Vast account environment variable names
@@ -62,6 +116,20 @@
       when: set_account_env_var | bool
       no_log: true
   rescue:
+    - name: Restore vault after provisioning failure
+      ansible.builtin.copy:
+        src: "{{ _vast_vault_workspace.path }}/vault.yml.backup"
+        dest: "{{ vast_vault_file }}"
+        remote_src: true
+        mode: "0644"
+      when:
+        - _vast_vault_workspace is defined
+        - _vast_vault_workspace.path is defined
+        - _vast_vault_backup is defined
+        - _vast_vault_backup is succeeded
+      failed_when: false
+      no_log: true
+
     - name: Revoke newly-created key after provisioning failure
       ansible.builtin.uri:
         url: "https://console.vast.ai/api/v0/auth/apikeys/{{ key_response.json.id }}/"
@@ -81,8 +149,19 @@
           Cloud-copy credential provisioning failed; no usable new credential
           remains (a partially-created key is revoked automatically).
 
+  always:
+    - name: Remove private vault rotation workspace
+      ansible.builtin.file:
+        path: "{{ _vast_vault_workspace.path }}"
+        state: absent
+      when:
+        - _vast_vault_workspace is defined
+        - _vast_vault_workspace.path is defined
+      no_log: true
+
 - name: Show non-secret provisioning result
   ansible.builtin.debug:
     msg: >-
       Scoped cloud-copy key id {{ key_response.json.id }} created;
-      account VAST_API_KEY {{ 'configured' if set_account_env_var | bool else 'not requested' }}.
+      saved to Ansible Vault; account VAST_API_KEY
+      {{ 'configured' if set_account_env_var | bool else 'not requested' }}.

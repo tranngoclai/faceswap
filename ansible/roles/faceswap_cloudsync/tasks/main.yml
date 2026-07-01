@@ -1,12 +1,11 @@
 ---
 # On-instance cron: rclone copy to push training data to Google Drive every N minutes.
-# Authenticates via GDRIVE_SA_JSON set as a Vast.ai instance environment variable
-# (Vast console → Instance → Environment Variables).
+# Authenticates via gdrive_sa_json from ansible/group_vars/google-account-vault.yml.
 
-- name: Require gdrive_sa_json (from vault.yml)
+- name: Require gdrive_sa_json
   ansible.builtin.assert:
     that: gdrive_sa_json | length > 0
-    fail_msg: "Run playbooks/provision-gdrive-sa-key.yml to populate vault.yml first."
+    fail_msg: "Run playbooks/provision-gdrive-sa-key.yml to populate google-account-vault.yml first."
 
 - name: Ensure gdrive credentials dir
   ansible.builtin.file:

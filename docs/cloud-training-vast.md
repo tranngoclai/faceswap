@@ -11,11 +11,11 @@ Train faceswap trên GPU thuê tại [vast.ai](https://cloud.vast.ai).
 | Cloud: install + GPU check | `ansible-playbook playbooks/cloud-setup.yml` |
 | Cloud: train (tmux) | `ansible-playbook playbooks/cloud-train.yml` |
 | Cloud: TensorBoard | `ansible-playbook playbooks/cloud-board.yml` |
-| Cloud: auto cloud-sync cron | `VAST_API_KEY=<scoped> ansible-playbook playbooks/cloud-cloudsync.yml` |
+| Cloud: auto cloud-sync cron | `ansible-playbook playbooks/cloud-cloudsync.yml` |
 | Cloud: rclone push/pull | `ansible-playbook playbooks/cloud-rclone.yml -e rclone_direction=push -e rclone_remote=…` |
-| RunPod: serverless health-check | `RUNPOD_API_KEY=<key> ansible-playbook playbooks/cloud-serverless-deploy.yml` |
-| RunPod: serverless extract | `RUNPOD_API_KEY=<key> ansible-playbook playbooks/cloud-serverless-extract.yml -e sl_input=alice.mp4 -e sl_r2_src=extract/in -e sl_r2_dst=extract/faces` |
-| Tạo scoped API key | `VAST_ADMIN_KEY=<primary> ansible-playbook playbooks/provision-key.yml` |
+| RunPod: serverless health-check | `ansible-playbook playbooks/cloud-serverless-deploy.yml` |
+| RunPod: serverless extract | `ansible-playbook playbooks/cloud-serverless-extract.yml -e sl_input=alice.mp4 -e sl_side=A` |
+| Tạo scoped API key | `ansible-playbook playbooks/provision-key.yml` |
 | Local: build CPU image | `ansible-playbook playbooks/local-build.yml` |
 | Local: extract→dedupe→sharp | `ansible-playbook playbooks/local-extract.yml -e fs_input=alice.mp4 -e fs_ws=alice` |
 | Local: dedupe / sharp riêng | `ansible-playbook playbooks/local-dedupe.yml` · `local-sharp.yml` |
@@ -26,11 +26,11 @@ Train faceswap trên GPU thuê tại [vast.ai](https://cloud.vast.ai).
 > Apple Silicon/Linux có torch native: thêm `-e fs_local_backend=native` (bỏ Docker).
 
 ```
-[LOCAL] extract+dedupe (A,B) ──upload──> [VAST.AI] train ──sync──> [Google Drive]
-[LOCAL] convert (ghép mặt) <─────────────────────────────── pull ──┘
-
-# Serverless extract (tách riêng — GPU theo job, KHÔNG dùng Vast):
-[RunPod Serverless] extract  <── input từ R2 ──  faces ──> R2 (Cloudflare)
+[App] upload video ───────────────────────────> [Google Drive] <workspace>/source/A|B/
+[RunPod Serverless] extract <── gdrive input ──  faces ──> Drive extract/A|B/  (operator review)
+[LOCAL] curate: copy approved ──────────────────────────> Drive train/input_A|B/
+[VAST.AI] train <── sync inputs from Drive ──> model/ ──sync back (cron)──> Drive train/model/
+[LOCAL] convert (ghép mặt) <─── pull model từ Drive ──────────────────────────────────────────┘
 ```
 
 ---
@@ -56,10 +56,10 @@ ansible-playbook playbooks/local-extract.yml -e fs_ws=bob   -e fs_input=bob.mp4
 #   xoá mặt xấu trong workspace/<ws>/review/<ts>/ rồi move keepers sang workspace/<ws>/faces/
 
 # === 3. CLOUD (vast.ai): tạo key + setup + train + auto-sync ===
-VAST_ADMIN_KEY=<primary> ansible-playbook playbooks/provision-key.yml   # -> in scoped key
+ansible-playbook playbooks/provision-key.yml                            # admin key lấy từ config
 ansible-playbook playbooks/cloud-setup.yml                              # clone + deps + GPU check
 ansible-playbook playbooks/cloud-train.yml -e fs_trainer=original -e fs_batch_size=16
-VAST_API_KEY=<scoped> ansible-playbook playbooks/cloud-cloudsync.yml    # cron đẩy /workspace -> Drive
+ansible-playbook playbooks/cloud-cloudsync.yml                          # cron đẩy /workspace -> Drive
 ansible-playbook playbooks/cloud-board.yml                              # TensorBoard (port 6006)
 #   (faces A/B + model dir cấu hình ở group_vars/cloud.yml: fs_faces_a/fs_faces_b/fs_train_model_dir)
 
@@ -193,13 +193,14 @@ Hai cách. **Khuyến nghị 3a** (vast Cloud Copy qua cron) — chạy trên in
 Tận dụng **cloud connection** sẵn trong vast.ai console (Settings → Cloud connections, vd Google Drive) → cron trên instance tự gọi API đẩy `/workspace` lên Drive mỗi 10 phút.
 
 ```bash
-# Bước 0 (LOCAL): tạo API key quyền tối thiểu (cần admin key đã `vastai set api-key`)
-VAST_ADMIN_KEY=<primary> ansible-playbook playbooks/provision-key.yml                    # in scoped key
-VAST_ADMIN_KEY=<primary> ansible-playbook playbooks/provision-key.yml -e set_account_env_var=true  # + account env-var
+# Bước 0 (LOCAL): tạo API key quyền tối thiểu (admin key lấy từ default config)
+ansible-playbook playbooks/provision-key.yml
+# Hoặc chỉ cập nhật Ansible Vault, không publish account env-var:
+ansible-playbook playbooks/provision-key.yml -e set_account_env_var=false
 
-# Cài cron (key qua VAST_API_KEY env, KHÔNG ghi file key). IDs ở group_vars/cloud.yml.
-VAST_API_KEY=<scoped> ansible-playbook playbooks/cloud-cloudsync.yml
-#   -> /root/cloud-sync.sh + crontab (dòng VAST_API_KEY + */10); log: /root/cloud-sync.log
+# Cài cron. GDRIVE_SA_JSON lấy từ Vast account secrets. IDs ở group_vars/cloud.yml.
+ansible-playbook playbooks/cloud-cloudsync.yml
+#   -> /root/cloud-sync.sh + crontab */10; log: /root/cloud-sync.log
 ```
 
 Permission tối thiểu (đã kiểm chứng): `instance_write → api.commands.rclone → POST` (route `/api/v0/commands/rclone/`). Key lộ cũng **không destroy instance / tiêu credit** được.
@@ -237,34 +238,49 @@ ansible-playbook playbooks/cloud-rclone.yml -e rclone_direction=pull -e rclone_r
 
 ---
 
-## 5. Serverless extract — RunPod + Cloudflare R2
+## 5. Serverless extract — RunPod + Google Drive
 
-Extract faces theo **job, scale-to-zero** trên [RunPod Serverless](https://runpod.io) (tách hẳn khỏi train trên Vast). Worker kéo input từ **Cloudflare R2** (S3-compatible) bằng `rclone copy`, extract trên GPU, đẩy faces ngược lại R2.
+Extract faces theo **job, scale-to-zero** trên [RunPod Serverless](https://runpod.io) (tách hẳn khỏi train trên Vast). Worker xác thực vào Google Drive bằng **service account JSON** (lưu trong RunPod endpoint secret), kéo video input từ Drive, extract trên GPU, đẩy faces ngược lại Drive.
 
-> **Khác Vast Cloud Copy:** `rclone copy` **đồng bộ** (block tới khi xong) → không cần vòng lặp poll status. Storage là **R2** thay vì Google Drive. Không có bước "deploy" — endpoint tạo **1 lần** trong RunPod console, playbook chỉ health-check.
+> Không có bước "deploy" — endpoint tạo **1 lần** trong RunPod console; playbook chỉ health-check.
+
+### Layout Google Drive
+
+```
+<fs_workspace_name>/
+├── source/A/        # video nguồn upload lên (từ App)
+├── source/B/
+├── extract/A/       # RunPod extract output — operator review tại đây
+├── extract/B/
+├── train/
+│   ├── input_A/     # operator copy faces đã duyệt vào đây
+│   ├── input_B/
+│   └── model/       # artifacts sync về từ VastAI
+└── logs/
+```
 
 ### Setup 1 lần
 
 1. Tạo serverless endpoint trong **RunPod console** (image: `ghcr.io/tranngoclai/faceswap-sl:<tag>`) → ghi lại `RUNPOD_ENDPOINT_ID`.
-2. Đặt **endpoint secrets** (R2 credentials, dùng cho rclone trên worker):
-   `R2_BUCKET`, `RCLONE_CONFIG_R2_TYPE=s3`, `RCLONE_CONFIG_R2_PROVIDER=Cloudflare`,
-   `RCLONE_CONFIG_R2_ENDPOINT=https://<account_id>.r2.cloudflarestorage.com`,
-   `RCLONE_CONFIG_R2_ACCESS_KEY_ID`, `RCLONE_CONFIG_R2_SECRET_ACCESS_KEY`.
-3. Lưu `RUNPOD_API_KEY` ở control machine: `RUNPOD_API_KEY=<key> ansible-playbook playbooks/provision-deploy-key.yml` (→ `~/.config/runpod/key`, chmod 600).
-4. Set `rp_endpoint_id` (và `r2_bucket`, `r2_endpoint`) trong `ansible/group_vars/cloud.yml`.
+2. Đặt **endpoint secrets** (dùng cho worker xác thực vào Drive):
+   `GDRIVE_SA_JSON_B64` — service account JSON đã base64-encode (`ansible-playbook playbooks/provision-gdrive-sa-key.yml`).
+   `GDRIVE_ROOT_FOLDER_ID` — ID thư mục Drive gốc (share folder này cho SA email).
+3. Lưu `runpod_api_key` trong Ansible Vault (`ansible/group_vars/vault.yml`).
+4. Set `rp_endpoint_id` và `gdrive_root_folder_id` trong `ansible/group_vars/cloud.yml`.
+5. Cấu hình rclone gdrive local: `ansible-playbook playbooks/cloud-cloudsync.yml` (dùng SA key từ `google-account-vault.yml`).
 
 ### Chạy
 
 ```bash
 cd ansible
 # Health-check endpoint
-RUNPOD_API_KEY=<key> ansible-playbook playbooks/cloud-serverless-deploy.yml
-# Submit 1 job (worker: R2 -> extract -> R2)
-RUNPOD_API_KEY=<key> ansible-playbook playbooks/cloud-serverless-extract.yml \
-  -e sl_input=alice.mp4 -e sl_r2_src=extract/in -e sl_r2_dst=extract/faces
+ansible-playbook playbooks/cloud-serverless-deploy.yml
+# Submit job (worker: Drive source/A -> extract -> Drive extract/A)
+ansible-playbook playbooks/cloud-serverless-extract.yml \
+  -e sl_input=alice.mp4 -e sl_side=A
 ```
 
-Tham số extract dùng chung `fs_*` (detector/aligner/extract_size/extract_norm/dedupe). Client POST `/runsync` → block tới khi job xong (timeout `sl_timeout`, mặc định 600s) → in JSON kết quả `{ok, input, faces, r2_dst}`.
+Tham số extract dùng chung `fs_*` (detector/aligner/extract_size/extract_norm/dedupe). Client POST `/runsync` → block tới khi job xong (timeout `sl_timeout`, mặc định 600s) → in JSON kết quả `{ok, input, faces, gdrive_dst}`.
 
 ### Gradio UI (thay thế CLI)
 
@@ -276,7 +292,7 @@ Tham số extract dùng chung `fs_*` (detector/aligner/extract_size/extract_norm
 
 # Copy template và điền giá trị
 cp app/.env.example app/.env
-# chỉnh app/.env: RUNPOD_API_KEY, RUNPOD_ENDPOINT_ID, R2_BUCKET, RCLONE_CONFIG_R2_*
+# chỉnh app/.env: RUNPOD_API_KEY, RUNPOD_ENDPOINT_ID, GDRIVE_ROOT_FOLDER_ID, GDRIVE_SA_JSON_B64
 
 ./fsenv/bin/python3 app/main.py
 # -> mở http://127.0.0.1:7860
@@ -284,7 +300,7 @@ cp app/.env.example app/.env
 
 Env vars được load từ `app/.env` (dùng `python-dotenv`). Template đầy đủ ở `app/.env.example`. File `app/.env` đã được gitignore.
 
-Flow: upload video → `rclone copyto` lên `R2:<bucket>/uploads/<id>/<filename>` → POST `/runsync` → hiện face count + đường dẫn R2 output + raw JSON. Tham số extract (detector/aligner/extract_size/extract_norm/dedupe/timeout) chỉnh trong **Advanced Options** trên UI.
+Flow: upload video → Drive `source/<side>/` → POST `/runsync` → worker extract → Drive `extract/<side>/` → hiện face count + Drive path + raw JSON. Tham số extract (detector/aligner/extract_size/extract_norm/dedupe/timeout) chỉnh trong **Advanced Options** trên UI.
 
 ---
 
@@ -296,7 +312,7 @@ Tất cả qua Ansible trong `ansible/` (chi tiết: [`ansible/README.md`](../an
 
 **Cloud (Vast):** `cloud-setup` | `cloud-train` | `cloud-board` | `cloud-cloudsync` | `cloud-rclone` | `provision-key`. Var: `faceswap_req_file`, `fs_faces_a/fs_faces_b`, `fs_train_model_dir`, `fs_trainer`, `fs_batch_size`.
 
-**Serverless (RunPod + R2):** `cloud-serverless-deploy` (health-check) | `cloud-serverless-extract` | `provision-deploy-key` (lưu RunPod key). Var: `rp_endpoint_id`, `r2_bucket`, `r2_endpoint`, `sl_input`, `sl_r2_src`, `sl_r2_dst`, `sl_timeout`. Env: `RUNPOD_API_KEY`.
+**Serverless (RunPod + Google Drive):** `cloud-serverless-deploy` (health-check) | `cloud-serverless-extract`. Var: `rp_endpoint_id`, `sl_input`, `sl_side`, `sl_timeout`. Endpoint secrets: `GDRIVE_SA_JSON_B64`, `GDRIVE_ROOT_FOLDER_ID`. Ansible Vault: `runpod_api_key`.
 
 ---
 

@@ -9,13 +9,6 @@ faceswap_pip: "/venv/main/bin/pip"
 faceswap_req_file: "requirements/requirements_nvidia_13.txt"
 faceswap_skip_torch: false                   # true = install base deps only (keep image torch)
 
-# Vast API key — used by vastai CLI on the control machine (instance management).
-# Cloud sync now uses rclone + Google service account; VAST_API_KEY is no longer
-# needed for the on-instance cron job.
-vast_api_key: >-
-  {{ lookup('env', 'VAST_API_KEY')
-     or lookup('file', '~/.config/vastai/vast_cloudsync_key', errors='ignore') | default('') }}
-
 # Training data (absolute paths under /workspace, persisted on the instance).
 fs_faces_a: "/workspace/train/input_aligned"
 fs_faces_b: "/workspace/train/output/faces_full"
@@ -35,8 +28,7 @@ fs_tb_port: 6006
 fs_train_session: "fs"
 fs_board_session: "tb"
 
-# rclone auto-sync (instance -> Google Drive via service account).
-# GDRIVE_SA_JSON must be set in Vast.ai instance environment variables.
+# rclone auto-sync (instance -> Google Drive via service account vault).
 cc_sync_src: "/workspace/train"               # local dir to push
 cc_interval_min: 10                           # cron frequency in minutes
 rclone_remote: "gdrive:faceswap-train"        # rclone remote:path destination
@@ -48,9 +40,6 @@ rclone_remote: "gdrive:faceswap-train"        # rclone remote:path destination
 # endpoint itself is created once in the RunPod console (no Ansible deploy).
 # ---------------------------------------------------------------------------
 # Absolute path (the `command` module does not expand ~); interpreter with `requests`.
-runpod_api_key: >-
-  {{ lookup('env', 'RUNPOD_API_KEY')
-     or lookup('file', '~/.config/runpod/key', errors='ignore') | default('') }}
 rp_python: "{{ lookup('env', 'HOME') }}/.local/pipx/venvs/runpod/bin/python3"
 rp_endpoint_id: "6kpdf1l7s6jq7t"              # RunPod endpoint ID
 

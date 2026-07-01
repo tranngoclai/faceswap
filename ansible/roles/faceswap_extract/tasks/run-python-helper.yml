@@ -20,7 +20,9 @@
 - name: "{{ helper_script }} (native)"
   ansible.builtin.command:
     chdir: "{{ fs_repo_root }}"
-    cmd: "{{ local_python }} {{ role_path }}/files/{{ helper_script }}"
+    argv:
+      - "{{ local_python }}"
+      - "{{ role_path }}/files/{{ helper_script }}"
   environment: "{{ helper_env }}"
   changed_when: true
   when: fs_local_backend == 'native'

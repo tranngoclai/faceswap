@@ -1,16 +1,19 @@
 ---
-# Mint a WORKER cloud-copy key (instance_read + instance_write) and store it
-# as an encrypted Vast account env var (VAST_API_KEY) for Serverless workers.
-# For the CONTROL MACHINE deploy key, use provision-deploy-key.yml instead.
+# Mint the scoped operational Vast key (instance_read + instance_write), save it
+# back to Ansible Vault, and optionally publish it as the Vast account
+# VAST_API_KEY secret.
 #
-#   VAST_ADMIN_KEY=<primary> ansible-playbook playbooks/provision-key.yml
-#   VAST_ADMIN_KEY=<primary> ansible-playbook playbooks/provision-key.yml -e set_account_env_var=true
+#   ansible-playbook playbooks/provision-key.yml
+#   ansible-playbook playbooks/provision-key.yml -e set_account_env_var=false  # vault only
 - name: Provision scoped vast cloud-copy key
   hosts: localhost
   gather_facts: false
+  vars_files:
+    - ../group_vars/vault.yml
   vars:
-    vast_admin_key: "{{ lookup('env', 'VAST_ADMIN_KEY') }}"
     vast_key_name: "faceswap-cloudcopy"
     set_account_env_var: true
+    vast_vault_file: "{{ playbook_dir }}/../group_vars/vault.yml"
+    vast_vault_password_file: "{{ lookup('env', 'HOME') }}/.config/ansible/vault-pass"
   roles:
     - vast_cloudcopy_key

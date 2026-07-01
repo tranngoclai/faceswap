@@ -1,6 +1,6 @@
 ---
 # rclone push/pull the model dir <-> Google Drive (service account auth).
-# Prereq: GDRIVE_SA_JSON set as a Vast.ai instance environment variable.
+# gdrive_sa_json is read only from ansible/group_vars/google-account-vault.yml.
 #   ansible-playbook playbooks/cloud-rclone.yml -e rclone_direction=push
 #   ansible-playbook playbooks/cloud-rclone.yml -e rclone_direction=pull
 - name: Faceswap rclone sync
@@ -8,5 +8,7 @@
   gather_facts: false
   vars:
     rclone_direction: push
+  vars_files:
+    - ../group_vars/google-account-vault.yml
   roles:
     - faceswap_rclone

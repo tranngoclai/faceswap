@@ -1,0 +1,23 @@
+---
+# Fetch account-level Vast.ai secrets into Ansible facts. The admin key itself
+# still comes from group_vars/default config; downstream API secrets come from Vast.
+
+- name: Require an admin/primary vast key
+  ansible.builtin.assert:
+    that: vast_admin_key | length > 0
+    fail_msg: "Set vast_admin_key in ansible/group_vars/vault.yml with ansible-vault."
+
+- name: Read Vast account secrets
+  ansible.builtin.uri:
+    url: "https://console.vast.ai/api/v0/secrets/"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ vast_admin_key }}"
+    status_code: 200
+  register: vast_account_secrets_response
+  no_log: true
+
+- name: Expose Vast account secrets
+  ansible.builtin.set_fact:
+    vast_account_secrets: "{{ vast_account_secrets_response.json.secrets | default({}) }}"
+  no_log: true

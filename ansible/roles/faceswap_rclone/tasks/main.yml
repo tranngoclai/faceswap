@@ -1,17 +1,17 @@
 ---
 # rclone push/pull the model dir against a Google Drive remote authenticated via
 # service account. Direction via rclone_direction: push|pull.
-# Prereq: GDRIVE_SA_JSON must be set as a Vast.ai instance environment variable.
+# gdrive_sa_json is loaded from ansible/group_vars/google-account-vault.yml.
 
 - name: Require an rclone remote
   ansible.builtin.assert:
     that: rclone_remote | length > 0
     fail_msg: "Set rclone_remote, e.g. -e rclone_remote=gdrive:faceswap-model"
 
-- name: Require gdrive_sa_json (from vault.yml)
+- name: Require gdrive_sa_json
   ansible.builtin.assert:
     that: gdrive_sa_json | length > 0
-    fail_msg: "Run playbooks/provision-gdrive-sa-key.yml to populate vault.yml first."
+    fail_msg: "Run playbooks/provision-gdrive-sa-key.yml to populate google-account-vault.yml first."
 
 - name: Ensure gdrive credentials dir
   ansible.builtin.file:

@@ -1,6 +1,6 @@
 ---
-# Encrypt a Google Drive service account JSON key into ansible/group_vars/vault.yml.
-# Run once (or re-run to rotate the key). Commit vault.yml afterwards.
+# Encrypt a Google Drive service account JSON key into
+# ansible/group_vars/google-account-vault.yml. Run once or re-run to rotate.
 #
 # Prerequisites:
 #   1. Create vault password file (one-time):
@@ -12,14 +12,14 @@
 #     -e gdrive_sa_key_file=~/Downloads/my-project-sa.json
 #
 # Then commit:
-#   git add ansible/group_vars/vault.yml && git commit -m "chore: rotate gdrive service account key"
+#   git add ansible/group_vars/google-account-vault.yml
 
-- name: Encrypt Google Drive service account key into vault.yml
+- name: Encrypt Google Drive service account key into google-account-vault.yml
   hosts: localhost
   gather_facts: false
   vars:
     sa_key_file: "{{ gdrive_sa_key_file | default('~/.config/gdrive/service-account.json') }}"
-    vault_file: "{{ playbook_dir }}/../group_vars/vault.yml"
+    vault_file: "{{ playbook_dir }}/../group_vars/google-account-vault.yml"
     vault_pass_file: "~/.config/ansible/vault-pass"
 
   tasks:
@@ -46,11 +46,11 @@
       no_log: true
       changed_when: true
 
-    - name: Write encrypted value to vault.yml
+    - name: Write encrypted value to google-account-vault.yml
       ansible.builtin.copy:
         content: |
           ---
-          # Ansible-vault encrypted secrets. Safe to commit — values are AES256 encrypted.
+          # Google service account JSON vault. Safe to commit — value is AES256 encrypted.
           # Rotate with: ansible-playbook playbooks/provision-gdrive-sa-key.yml -e gdrive_sa_key_file=~/path/to/sa.json
           # Vault password file: ~/.config/ansible/vault-pass  (local only, never commit)
           {{ _encrypted.stdout }}
@@ -61,6 +61,5 @@
     - name: Done
       ansible.builtin.debug:
         msg: >-
-          vault.yml updated. Next:
-          git add ansible/group_vars/vault.yml
-          git commit -m "chore: update gdrive service account key"
+          google-account-vault.yml updated. Next:
+          git add ansible/group_vars/google-account-vault.yml

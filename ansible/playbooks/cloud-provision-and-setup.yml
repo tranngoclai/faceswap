@@ -1,0 +1,9 @@
+---
+# One-shot: create vast.ai instance + install faceswap deps + verify GPU.
+# Play 1 (localhost): search offer → create instance → wait running → patch ~/.ssh/config
+# Play 2 (cloud):     clone repo → install deps → assert CUDA available
+#
+#   ansible-playbook playbooks/cloud-provision-and-setup.yml
+#   ansible-playbook playbooks/cloud-provision-and-setup.yml -e vast_gpu=RTX_3090 -e vast_disk=80
+- import_playbook: provision-vast-instance.yml
+- import_playbook: cloud-setup.yml

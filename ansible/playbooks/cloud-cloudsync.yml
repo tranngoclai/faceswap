@@ -1,9 +1,12 @@
 ---
 # Install the on-instance cron that auto-runs `rclone copy` to Google Drive.
-# Prereq: GDRIVE_SA_JSON set as a Vast.ai instance environment variable.
+# gdrive_sa_json is read only from ansible/group_vars/google-account-vault.yml.
 #   ansible-playbook playbooks/cloud-cloudsync.yml
 - name: Faceswap cloud-sync cron
   hosts: cloud
   gather_facts: false
+  vars_files:
+    - ../group_vars/google-account-vault.yml
+
   roles:
     - faceswap_cloudsync

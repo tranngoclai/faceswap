@@ -2,18 +2,21 @@
 # Health-check the RunPod faceswap-extract serverless endpoint (runs LOCAL).
 # RunPod has no Ansible-driven "deploy": the endpoint is created once in the
 # RunPod console. This playbook only confirms it is reachable.
-#   RUNPOD_API_KEY=<key> ansible-playbook playbooks/cloud-serverless-deploy.yml
+#   ansible-playbook playbooks/cloud-serverless-deploy.yml
+# runpod_api_key is read only from ansible/group_vars/vault.yml.
 - name: Check RunPod faceswap-extract endpoint health
   hosts: localhost
   gather_facts: false
   vars_files:
+    - ../group_vars/all.yml
     - ../group_vars/cloud.yml
-  tasks:
+    - ../group_vars/vault.yml
+  pre_tasks:
     - name: Require RunPod API key
       ansible.builtin.assert:
         that:
-          - lookup('env', 'RUNPOD_API_KEY') | length > 0
-        fail_msg: "Set RUNPOD_API_KEY env var (RunPod endpoint API key)."
+          - runpod_api_key | length > 0
+        fail_msg: "Set runpod_api_key in ansible/group_vars/vault.yml with ansible-vault."
 
     - name: Require endpoint id
       ansible.builtin.assert:
@@ -21,15 +24,17 @@
           - rp_endpoint_id | length > 0
         fail_msg: "Set rp_endpoint_id in group_vars/cloud.yml (from RunPod console)."
 
+  tasks:
     - name: Check endpoint health
       ansible.builtin.uri:
         url: "https://api.runpod.ai/v2/{{ rp_endpoint_id }}/health"
         method: GET
         headers:
-          Authorization: "Bearer {{ lookup('env', 'RUNPOD_API_KEY') }}"
+          Authorization: "Bearer {{ runpod_api_key }}"
         status_code: 200
       register: health
+      no_log: true
 
     - name: Show health
       ansible.builtin.debug:
-        var: health.json
+        msg: "RunPod endpoint {{ rp_endpoint_id }} health check returned HTTP {{ health.status }}."

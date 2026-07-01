@@ -84,7 +84,11 @@
   when: fs_dedupe | bool and (fs_dedup_threshold | int) > 0
 
 - name: Promote raw -> review folder (dedupe off)
-  ansible.builtin.command: "mv {{ fs_repo_root }}/{{ fs_raw }} {{ fs_repo_root }}/{{ fs_run }}"
+  ansible.builtin.command:
+    argv:
+      - mv
+      - "{{ fs_repo_root }}/{{ fs_raw }}"
+      - "{{ fs_repo_root }}/{{ fs_run }}"
   changed_when: true
   when: not (fs_dedupe | bool and (fs_dedup_threshold | int) > 0)
 
@@ -96,7 +100,11 @@
 
 # ---- sharpness filter (optional) --------------------------------------------
 - name: Stage review -> blurry for sharpness filtering
-  ansible.builtin.command: "mv {{ fs_repo_root }}/{{ fs_run }} {{ fs_repo_root }}/{{ fs_blurry }}"
+  ansible.builtin.command:
+    argv:
+      - mv
+      - "{{ fs_repo_root }}/{{ fs_run }}"
+      - "{{ fs_repo_root }}/{{ fs_blurry }}"
   changed_when: true
   when: (fs_blur_threshold | int) > 0
 
