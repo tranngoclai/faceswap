@@ -39,7 +39,7 @@ output "vast_geolocation" {
 }
 
 # ── RunPod serverless endpoint outputs ────────────────────────────────────────
-output "runpod_endpoint_id" {
-  description = "RunPod serverless endpoint ID (set as rp_endpoint_id in ansible/group_vars/cloud.yml)"
-  value       = var.enable_runpod ? runpod_endpoint.extract[0].id : null
+output "runpod_template_id" {
+  description = "RunPod template ID — referenced by the endpoint (created once in RunPod console)"
+  value       = var.enable_runpod ? runpod_template.extract[0].id : null
 }

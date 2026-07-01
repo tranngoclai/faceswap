@@ -41,7 +41,14 @@ cc_interval_min: 10
 # ---------------------------------------------------------------------------
 # Absolute path (the `command` module does not expand ~); interpreter with `requests`.
 rp_python: "{{ lookup('env', 'HOME') }}/.local/pipx/venvs/runpod/bin/python3"
-rp_endpoint_id: "6kpdf1l7s6jq7t"              # RunPod endpoint ID
+rp_endpoint_id: ""  # managed by cloud-provision-instance.yml — do not edit manually
+
+# Terraform-managed endpoint config (mirrors terraform/variables.tf defaults).
+rp_workers_max: 1
+rp_idle_timeout: 10
+rp_execution_timeout_ms: 200000
+rp_scaler_type: "QUEUE_DELAY"
+rp_scaler_value: 4
 
 # Cloudflare R2. r2_bucket is the bucket name. r2_endpoint and credentials
 # (r2_access_key_id, r2_secret_access_key) live in ansible/group_vars/vault.yml.
