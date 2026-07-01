@@ -5,15 +5,13 @@
 # updating the template in the RunPod console, not via Terraform.
 #
 # Resource docs:
-#   https://registry.terraform.io/providers/decentralized-infrastructure/runpod/latest/docs/resources/endpoint
+#   https://registry.terraform.io/providers/runpod/runpod/latest/docs/resources/endpoint
 
 resource "runpod_endpoint" "extract" {
   count = var.enable_runpod ? 1 : 0
 
-  # Template ID from RunPod console — defines the worker image, CMD, and env.
-  # Template c6qbhpmcx5 → ghcr.io/tranngoclai/faceswap-sl:cu126
   name        = var.rp_endpoint_name
-  template_id = var.rp_template_id
+  template_id = runpod_template.extract[count.index].id
 
   # GPU selection: both models are CUDA 12.6-capable (RTX 40/30 series).
   gpu_type_ids = var.rp_gpu_type_ids
@@ -43,7 +41,6 @@ resource "runpod_endpoint" "extract" {
   scaler_type  = var.rp_scaler_type
   scaler_value = var.rp_scaler_value
 
-  # Provider v1.0.1 bug: compute_type and vcpu_count round-trip inconsistently
   lifecycle {
     ignore_changes = [compute_type, vcpu_count]
   }

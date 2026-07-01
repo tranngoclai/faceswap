@@ -11,9 +11,9 @@ terraform {
     }
 
     # Official RunPod provider for serverless endpoint management.
-    # Registry: https://registry.terraform.io/providers/decentralized-infrastructure/runpod
+    # Registry: https://registry.terraform.io/providers/runpod/runpod
     runpod = {
-      source  = "decentralized-infrastructure/runpod"
+      source  = "runpod/runpod"
       version = "~> 1.0"
     }
   }

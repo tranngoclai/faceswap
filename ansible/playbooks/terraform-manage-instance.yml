@@ -45,7 +45,6 @@
     vast_ssh_alias: "vast-training"
 
     # RunPod serverless endpoint knobs (sourced from group_vars/cloud.yml)
-    rp_template_id: "{{ rp_template_id }}"
     rp_workers_max: "{{ rp_workers_max }}"
     rp_idle_timeout: "{{ rp_idle_timeout }}"
     rp_execution_timeout_ms: 200000
@@ -74,6 +73,7 @@
         tf_env:
           TF_VAR_vast_api_key: "{{ vast_admin_key }}"
           TF_VAR_runpod_api_key: "{{ runpod_api_key | default('') }}"
+          RUNPOD_API_KEY: "{{ runpod_api_key | default('') }}"
           TF_VAR_enable_vast: "{{ enable_vast | bool | string | lower }}"
           TF_VAR_enable_runpod: "{{ enable_runpod | bool | string | lower }}"
           TF_VAR_vast_gpu: "{{ vast_gpu }}"
@@ -85,12 +85,14 @@
           TF_VAR_vast_max_price_per_hour: "{{ vast_max_price_per_hour }}"
           TF_VAR_vast_offer_type: "{{ vast_offer_type }}"
           TF_VAR_vast_datacenter_only: "{{ vast_datacenter_only | bool | string | lower }}"
-          TF_VAR_rp_template_id: "{{ rp_template_id }}"
+          TF_VAR_rp_image_name: "{{ rp_image_name }}"
           TF_VAR_rp_workers_max: "{{ rp_workers_max }}"
           TF_VAR_rp_idle_timeout: "{{ rp_idle_timeout }}"
           TF_VAR_rp_execution_timeout_ms: "{{ rp_execution_timeout_ms }}"
           TF_VAR_rp_scaler_type: "{{ rp_scaler_type }}"
           TF_VAR_rp_scaler_value: "{{ rp_scaler_value }}"
+          TF_VAR_rp_gdrive_sa_json_b64: "{{ rp_gdrive_sa_json_b64 }}"
+          TF_VAR_rp_gdrive_root_folder_id: "{{ gdrive_root_folder_id }}"
 
     # ── Terraform plan (dry-run, no state changes) ────────────────────────────
     - name: Terraform plan
@@ -131,12 +133,14 @@
           vast_max_price_per_hour: "{{ vast_max_price_per_hour }}"
           vast_offer_type: "{{ vast_offer_type }}"
           vast_datacenter_only: "{{ vast_datacenter_only | bool }}"
-          rp_template_id: "{{ rp_template_id }}"
+          rp_image_name: "{{ rp_image_name }}"
           rp_workers_max: "{{ rp_workers_max }}"
           rp_idle_timeout: "{{ rp_idle_timeout }}"
           rp_execution_timeout_ms: "{{ rp_execution_timeout_ms }}"
           rp_scaler_type: "{{ rp_scaler_type }}"
           rp_scaler_value: "{{ rp_scaler_value }}"
+          rp_gdrive_sa_json_b64: "{{ rp_gdrive_sa_json_b64 }}"
+          rp_gdrive_root_folder_id: "{{ gdrive_root_folder_id }}"
       register: tf_result
 
     # ── Persist state to vault ─────────────────────────────────────────────────

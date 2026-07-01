@@ -66,6 +66,7 @@ rp_endpoint_id: "kft8ical0jzbvu"              # managed by cloud-provision-insta
 
 # RunPod serverless endpoint Terraform config (read by cloud-provision-instance.yml).
 rp_template_id: "c6qbhpmcx5"                # RunPod serverless worker template ID
+rp_image_name: "ghcr.io/tranngoclai/faceswap-sl:1.0.11"
 rp_workers_max: 1                            # max concurrent workers
 rp_idle_timeout: 10                          # seconds worker stays alive with no jobs
 
