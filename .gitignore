@@ -13,6 +13,7 @@
 !pyproject.toml
 !.gitignore
 !.travis.yml
+!Makefile
 !/faceswap.py
 !/setup.py
 !/tools.py
@@ -89,8 +90,10 @@ app/.env
 !app/
 !app/main.py
 !app/manifest.py
+!app/rclone_runtime.py
 !app/.env.example
 !app/requirements.txt
+!app/Dockerfile
 
 # App env
 app/.env

@@ -10,9 +10,8 @@ resource "runpod_template" "extract" {
 
   name              = "faceswap-extract"
   image_name        = var.rp_image_name
-  category          = "NVIDIA"
+  container_registry_auth_id = ""
   container_disk_in_gb = 50
-  is_serverless     = true
   is_public         = false
   volume_mount_path = "/workspace"
   readme            = ""
@@ -20,10 +19,12 @@ resource "runpod_template" "extract" {
   # Worker ports: Jupyter (8888), SSH (22 tcp+udp).
   ports = ["8888/http", "22/tcp", "22/udp"]
 
-  # Runtime environment: Google Drive service account for rclone.
+  # Runtime environment: Google Drive OAuth for rclone.
+  # Only the refresh_token is stored here (RunPod template env vars are capped at 256 chars;
+  # a full token JSON is 400-600 chars). The worker reconstructs a minimal token JSON at startup.
   # Secrets injected via TF_VAR_* from Ansible vault at apply time.
   env = {
-    GDRIVE_SA_JSON_B64   = var.rp_gdrive_sa_json_b64
+    GDRIVE_REFRESH_TOKEN  = var.rp_gdrive_refresh_token
     GDRIVE_ROOT_FOLDER_ID = var.rp_gdrive_root_folder_id
   }
 

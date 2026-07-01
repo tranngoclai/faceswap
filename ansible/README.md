@@ -83,12 +83,18 @@ ansible-playbook playbooks/cloud-provision-instance.yml -e destroy=true
 | Submit extract job (Drive source → Drive extract) | `ansible-playbook playbooks/runpod-extract-faces.yml -e sl_input=alice.mp4 -e sl_side=A` |
 
 Endpoint secrets set in RunPod console (not stored here):
-`GDRIVE_SA_JSON_B64`, `GDRIVE_ROOT_FOLDER_ID`.
+`GDRIVE_TOKEN_JSON`, `GDRIVE_ROOT_FOLDER_ID` (service-account auth remains a legacy fallback).
 
 ## Google Drive / rclone setup
 
 ```bash
+# App + RunPod worker: authorize a Drive-owning user, then store token in Vault
+cd .. && make app-auth && cd ansible
+GDRIVE_TOKEN_JSON="$(sed -n 's/^GDRIVE_TOKEN_JSON=//p' ../app/.env)" \
+  ansible-playbook playbooks/vault-store-runpod-gdrive-oauth.yml
+
 # Encrypt and store new SA key (prompts for JSON path)
+# Legacy fallback for infrastructure that still uses service-account auth.
 ansible-playbook playbooks/vault-store-gdrive-sa-key.yml
 
 # Install on-instance rclone + cron (syncs model back to Drive every 10 min)

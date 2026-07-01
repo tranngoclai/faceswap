@@ -1,37 +1,10 @@
 ---
 # On-instance cron: rclone copy to push training data to Google Drive every N minutes.
-# Authenticates via gdrive_sa_json from ansible/group_vars/google-account-vault.yml.
+# Authenticates via OAuth token from vault.yml (rp_gdrive_token_json).
 
-- name: Require gdrive_sa_json
-  ansible.builtin.assert:
-    that: gdrive_sa_json | length > 0
-    fail_msg: "Run playbooks/vault-store-gdrive-sa-key.yml to populate google-account-vault.yml first."
-
-- name: Ensure gdrive credentials dir
-  ansible.builtin.file:
-    path: /root/.config/gdrive
-    state: directory
-    mode: "0700"
-
-- name: Write service account JSON to disk
-  ansible.builtin.copy:
-    content: "{{ gdrive_sa_json }}"
-    dest: /root/.config/gdrive/service-account.json
-    mode: "0600"
-  no_log: true
-
-- name: Configure rclone gdrive remote (service account)
-  ansible.builtin.command:
-    argv:
-      - rclone
-      - config
-      - create
-      - "{{ gdrive_remote_name }}"
-      - drive
-      - scope=drive
-      - "service_account_file={{ gdrive_sa_file }}"
-      - "root_folder_id={{ gdrive_root_folder_id }}"
-  changed_when: false
+- name: Configure rclone remote
+  ansible.builtin.include_role:
+    name: faceswap_rclone
 
 - name: Require gdrive sync destination
   ansible.builtin.assert:

@@ -14,7 +14,7 @@ data "vastai_gpu_offers" "primary" {
   num_gpus           = var.vast_num_gpus
   gpu_ram_gb         = var.vast_gpu_ram_gb        # null = no VRAM filter
   max_price_per_hour = var.vast_max_price_per_hour
-  offer_type         = var.vast_offer_type         # "on_demand" or "bid"
+  offer_type         = var.vast_offer_type         # "on-demand" or "bid"
   datacenter_only    = var.vast_datacenter_only    # true = verified DCs only
   order_by           = "dph_total"                 # cheapest first
   limit              = 5
@@ -23,7 +23,9 @@ data "vastai_gpu_offers" "primary" {
   # selection (vastai/pytorch ships the matching driver stack).
 }
 
-# Fallback GPU search — used only when the primary GPU has no available offers
+# Fallback GPU search — queried at plan time regardless of primary results (Terraform
+# data sources cannot be conditionally skipped based on another source's runtime output).
+# Selection between primary/fallback happens in the locals block below.
 data "vastai_gpu_offers" "fallback" {
   count = var.enable_vast ? 1 : 0
 

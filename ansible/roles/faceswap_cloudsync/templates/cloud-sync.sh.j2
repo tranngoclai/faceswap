@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Managed by Ansible (roles/faceswap_cloudsync). Do not edit by hand.
 # rclone gdrive remote is pre-configured by the cloudsync role using the
-# GDRIVE_SA_JSON instance env var → /root/.config/gdrive/service-account.json.
+# OAuth token from Ansible vault (rp_gdrive_token_json → /root/.config/rclone/rclone.conf).
 export HOME=/root
 export PATH=/venv/main/bin:/usr/local/bin:/usr/bin:/bin
 ts="$(date '+%F %T')"

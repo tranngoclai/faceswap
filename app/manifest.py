@@ -18,13 +18,11 @@ Schema v1:
   }
 """
 import json
-import os
-import subprocess
 import tempfile
 from datetime import datetime, timezone
 
+import rclone_runtime
 
-GDRIVE_REMOTE = os.environ.get("GDRIVE_REMOTE", "gdrive")
 MANIFEST_FILENAME = "manifest.json"
 
 
@@ -33,13 +31,13 @@ def _now() -> str:
 
 
 def _remote_path(ws: str) -> str:
-    return f"{GDRIVE_REMOTE}:{ws}/{MANIFEST_FILENAME}"
+    return rclone_runtime.remote_path(f"{ws}/{MANIFEST_FILENAME}")
 
 
 def read(ws: str) -> dict:
     """Return existing manifest for workspace, or a fresh empty one."""
-    result = subprocess.run(
-        ["rclone", "cat", _remote_path(ws)],
+    result = rclone_runtime.run(
+        ["cat", _remote_path(ws)],
         capture_output=True,
     )
     if result.returncode != 0 or not result.stdout.strip():
@@ -59,8 +57,8 @@ def write(ws: str, data: dict) -> None:
         json.dump(data, fh, indent=2)
         tmp_path = fh.name
     try:
-        result = subprocess.run(
-            ["rclone", "copyto", tmp_path, _remote_path(ws)],
+        result = rclone_runtime.run(
+            ["copyto", tmp_path, _remote_path(ws)],
             capture_output=True, text=True,
         )
         if result.returncode != 0:

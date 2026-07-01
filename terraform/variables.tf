@@ -120,12 +120,18 @@ variable "rp_endpoint_name" {
 variable "rp_image_name" {
   description = "Docker image for the RunPod serverless worker (e.g. ghcr.io/tranngoclai/faceswap-sl:1.0.11)"
   type        = string
+  default     = ""
+  validation {
+    condition     = !var.enable_runpod || length(var.rp_image_name) > 0
+    error_message = "rp_image_name must be set when enable_runpod is true."
+  }
 }
 
-variable "rp_gdrive_sa_json_b64" {
-  description = "Google Drive service account JSON base64-encoded (injected via TF_VAR_rp_gdrive_sa_json_b64 from Ansible vault)"
+variable "rp_gdrive_refresh_token" {
+  description = "Google Drive OAuth refresh_token only (avoids RunPod 256-char env var limit; worker reconstructs minimal token JSON)"
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "rp_gdrive_root_folder_id" {
@@ -199,4 +205,3 @@ variable "rp_scaler_value" {
   type        = number
   default     = 4
 }
-

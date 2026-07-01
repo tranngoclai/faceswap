@@ -1,0 +1,29 @@
+---
+# Store the app's Google Drive OAuth token in vault.yml for the RunPod worker.
+# The token is read from the process environment so it never appears in argv.
+#
+# Usage from ansible/:
+#   GDRIVE_TOKEN_JSON=<token-json> \
+#     ansible-playbook playbooks/vault-store-runpod-gdrive-oauth.yml
+
+- name: Store RunPod Google Drive OAuth token in vault.yml
+  hosts: localhost
+  gather_facts: false
+  vars:
+    vault_file: "{{ playbook_dir }}/../group_vars/vault.yml"
+    vault_key: "rp_gdrive_token_json"
+    vault_value: "{{ lookup('env', 'GDRIVE_TOKEN_JSON') }}"
+
+  pre_tasks:
+    - name: Require OAuth token environment variable
+      ansible.builtin.assert:
+        that: vault_value | length > 0
+        fail_msg: "Set GDRIVE_TOKEN_JSON before running this playbook."
+
+  roles:
+    - vault_upsert
+
+  post_tasks:
+    - name: Done
+      ansible.builtin.debug:
+        msg: "rp_gdrive_token_json injected into vault.yml. Safe to commit."

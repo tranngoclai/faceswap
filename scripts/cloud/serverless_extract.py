@@ -12,9 +12,10 @@ Flow inside a worker (one extract job):
         --> python faceswap.py extract --> .../faces (+ optional dedupe)
         --(rclone copy)--> gdrive:<gdrive_dst>
 
-Auth: the worker reads GDRIVE_SA_JSON_B64 (RunPod endpoint secret), decodes it
-to /tmp/gdrive-sa-worker.json (mode 0600), then configures the rclone gdrive
-remote at startup. No rclone.conf file is needed on the worker container.
+Auth: the worker reads GDRIVE_REFRESH_TOKEN (RunPod template env, < 256 chars) and
+reconstructs a minimal token JSON so rclone can refresh access tokens automatically.
+GDRIVE_TOKEN_JSON (full JSON) is accepted as an override for local dev. No rclone.conf
+file is needed on the worker container.
 
 Control-machine submit: RUNPOD_API_KEY must be set in the environment. If
 /runsync returns IN_PROGRESS the CLI polls /status/{id} until terminal.
@@ -23,12 +24,10 @@ Requires `requests` locally for submit; `runpod` + `rclone` on the worker image.
 """
 import argparse
 import asyncio
-import base64
 import json
 import os
 import shutil
 import shlex
-import stat
 import subprocess
 import uuid
 from pathlib import PurePosixPath
@@ -40,13 +39,16 @@ RUNPOD_ENDPOINT_ID = os.environ.get("RUNPOD_ENDPOINT_ID", "")
 RUNPOD_API_BASE = os.environ.get("RUNPOD_API_BASE", "https://api.runpod.ai/v2")
 
 GDRIVE_REMOTE = os.environ.get("GDRIVE_REMOTE", "gdrive")
-GDRIVE_SA_JSON_B64 = os.environ.get("GDRIVE_SA_JSON_B64", "")
+GDRIVE_TOKEN_JSON = os.environ.get("GDRIVE_TOKEN_JSON", "")
+# RunPod template env vars are capped at 256 chars; a full token JSON is 400-600 chars.
+# GDRIVE_REFRESH_TOKEN stores only the refresh_token (~80 chars); _setup_gdrive reconstructs
+# a minimal token JSON so rclone can obtain a fresh access_token automatically.
+GDRIVE_REFRESH_TOKEN = os.environ.get("GDRIVE_REFRESH_TOKEN", "")
 GDRIVE_ROOT_FOLDER_ID = os.environ.get("GDRIVE_ROOT_FOLDER_ID", "")
-GDRIVE_SA_FILE = "/tmp/gdrive-sa-worker.json"
 
 FACESWAP_DIR = os.environ.get("FACESWAP_DIR", "/workspace/faceswap")
 WORK_ROOT = os.environ.get("WORK_ROOT", "/workspace/sl")
-DEDUPE_REMOTE = f"{WORK_ROOT}/dedupe_faces.py"
+DEDUPE_SCRIPT = f"{WORK_ROOT}/dedupe_faces.py"
 
 # Subprocess timeout knobs — tune via env vars on the RunPod endpoint secret.
 RCLONE_TIMEOUT_S = int(os.environ.get("RCLONE_TIMEOUT_S", "600"))   # 10 min per transfer
@@ -54,28 +56,44 @@ EXTRACT_TIMEOUT_S = int(os.environ.get("EXTRACT_TIMEOUT_S", "1800"))  # 30 min f
 
 
 def _setup_gdrive() -> None:
-    """Decode GDRIVE_SA_JSON_B64 to disk and configure rclone gdrive remote.
+    """Configure rclone Google Drive remote via environment variables.
 
-    No-op when GDRIVE_SA_JSON_B64 is empty (pre-configured rclone.conf is used).
-    Security: never prints decoded content; writes SA file with 0600 permissions.
+    Priority:
+      1. GDRIVE_TOKEN_JSON  — full token JSON (local dev / manual override)
+      2. GDRIVE_REFRESH_TOKEN — refresh_token only (RunPod template env, < 256 chars);
+         a minimal token JSON is reconstructed so rclone refreshes the access_token itself.
+
+    No-op when neither is set (assumes rclone.conf pre-configured).
     """
-    if not GDRIVE_SA_JSON_B64:
+    token_json = GDRIVE_TOKEN_JSON
+    if not token_json and GDRIVE_REFRESH_TOKEN:
+        # Reconstruct minimal token JSON. access_token is intentionally expired so
+        # rclone uses the refresh_token to obtain a fresh one on first use.
+        token_json = json.dumps({
+            "access_token": "x",
+            "refresh_token": GDRIVE_REFRESH_TOKEN,
+            "token_type": "Bearer",
+            "expiry": "2006-01-02T15:04:05.000000000Z",
+        }, separators=(",", ":"))
+
+    if not token_json:
         return
 
-    sa_json = base64.b64decode(GDRIVE_SA_JSON_B64)
-    with open(GDRIVE_SA_FILE, "wb") as fh:
-        fh.write(sa_json)
-    os.chmod(GDRIVE_SA_FILE, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+    try:
+        token = json.loads(token_json)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("GDRIVE_TOKEN_JSON is not valid JSON") from exc
+    if not token.get("refresh_token"):
+        raise RuntimeError("Google Drive token must contain refresh_token")
+    if not GDRIVE_REMOTE.replace("_", "").isalnum():
+        raise RuntimeError("GDRIVE_REMOTE must contain only letters, digits, or underscores")
 
-    args = [
-        "rclone", "config", "create", GDRIVE_REMOTE, "drive",
-        "scope=drive",
-        f"service_account_file={GDRIVE_SA_FILE}",
-    ]
+    prefix = f"RCLONE_CONFIG_{GDRIVE_REMOTE.upper()}"
+    os.environ[f"{prefix}_TYPE"] = "drive"
+    os.environ[f"{prefix}_SCOPE"] = "drive"
+    os.environ[f"{prefix}_TOKEN"] = json.dumps(token, separators=(",", ":"))
     if GDRIVE_ROOT_FOLDER_ID:
-        args.append(f"root_folder_id={GDRIVE_ROOT_FOLDER_ID}")
-
-    subprocess.run(args, check=True, capture_output=True)
+        os.environ[f"{prefix}_ROOT_FOLDER_ID"] = GDRIVE_ROOT_FOLDER_ID
 
 
 async def _run(
@@ -159,7 +177,7 @@ async def _extract_async(job_input: dict) -> dict:
     extract_norm = job_input.get("extract_norm", "hist")
     dedupe_threshold = int(job_input.get("dedupe_threshold", 6))
 
-    # Re-run gdrive setup each job so rotated SA keys take effect without worker restart.
+    # Re-run setup each job so rotated OAuth/SA credentials take effect.
     await asyncio.to_thread(_setup_gdrive)
 
     job_root = f"{WORK_ROOT}/jobs/{uuid.uuid4().hex}"
@@ -195,11 +213,11 @@ async def _extract_async(job_input: dict) -> dict:
         def _png_count(d: str) -> int:
             return len([f for f in os.listdir(d) if f.lower().endswith(".png")])
 
-        if dedupe_threshold and int(dedupe_threshold) > 0 and _png_count(faces_dir) > 0:
-            _stage(f"3/4 dedupe (thresh={int(dedupe_threshold)})")
+        if dedupe_threshold and dedupe_threshold > 0 and _png_count(faces_dir) > 0:
+            _stage(f"3/4 dedupe (thresh={dedupe_threshold})")
             deduped = f"{job_root}/faces_deduped"
             await _run(
-                f"python {shlex.quote(DEDUPE_REMOTE)}",
+                f"python {shlex.quote(DEDUPE_SCRIPT)}",
                 extra_env={
                     "SRC": faces_dir,
                     "OUT": deduped,

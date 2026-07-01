@@ -1,6 +1,6 @@
 ---
 # Provision the vast.ai instance: clone + install deps + verify GPU.
-#   ansible-playbook playbooks/cloud-setup.yml
+#   ansible-playbook playbooks/cloud-install-faceswap.yml
 - name: Faceswap cloud setup (install + check)
   hosts: cloud
   gather_facts: false

@@ -25,7 +25,6 @@ gdrive_train_root: "{{ gdrive_workspace }}/train"
 gdrive_train_input_a: "{{ gdrive_train_root }}/input_A"
 gdrive_train_input_b: "{{ gdrive_train_root }}/input_B"
 gdrive_train_model: "{{ gdrive_train_root }}/model"
-gdrive_sa_file: "/root/.config/gdrive/service-account.json"
 
 # Training data (absolute paths under /workspace, persisted on the instance).
 fs_faces_a: "/workspace/train/input_aligned"
@@ -58,14 +57,13 @@ cc_instance_id: ""   # VastAI contract ID
 # RunPod Serverless extract endpoint (scripts/cloud/serverless_extract.py).
 # Submit runs on the CONTROL machine (needs `pip install requests`). The worker
 # pulls input + pushes faces via `rclone copy` to/from Google Drive using a
-# service account (GDRIVE_SA_JSON_B64 RunPod endpoint secret).
+# user OAuth token (GDRIVE_TOKEN_JSON RunPod endpoint secret).
 # ---------------------------------------------------------------------------
 # Absolute path (the `command` module does not expand ~); interpreter with `requests`.
 rp_python: "{{ lookup('env', 'HOME') }}/.local/pipx/venvs/runpod/bin/python3"
-rp_endpoint_id: "kft8ical0jzbvu"              # managed by cloud-provision-instance.yml — do not edit manually
+rp_endpoint_id: ""                            # managed by terraform-manage-instance.yml — do not edit manually
 
-# RunPod serverless endpoint Terraform config (read by cloud-provision-instance.yml).
-rp_template_id: "c6qbhpmcx5"                # RunPod serverless worker template ID
+# RunPod serverless endpoint Terraform config (read by terraform-manage-instance.yml).
 rp_image_name: "ghcr.io/tranngoclai/faceswap-sl:1.0.11"
 rp_workers_max: 1                            # max concurrent workers
 rp_idle_timeout: 10                          # seconds worker stays alive with no jobs

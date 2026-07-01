@@ -1,0 +1,26 @@
+---
+# Configure rclone with Google Drive OAuth token.
+# Consumed by both faceswap_cloudsync (cron install) and pull-train-faces (one-off sync).
+
+- name: Require Google Drive OAuth token
+  ansible.builtin.assert:
+    that: rp_gdrive_token_json | default('') | length > 0
+    fail_msg: "Run 'make setup' (gdrive-setup + vault-sync) first."
+
+- name: Ensure rclone config dir
+  ansible.builtin.file:
+    path: /root/.config/rclone
+    state: directory
+    mode: "0700"
+
+- name: Configure rclone gdrive remote with OAuth
+  ansible.builtin.copy:
+    content: |
+      [{{ gdrive_remote_name }}]
+      type = drive
+      scope = drive
+      token = {{ rp_gdrive_token_json }}
+      root_folder_id = {{ gdrive_root_folder_id }}
+    dest: /root/.config/rclone/rclone.conf
+    mode: "0600"
+  no_log: true

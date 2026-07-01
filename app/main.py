@@ -8,12 +8,12 @@ Flow:
   4. Result (face count, Drive output path, raw JSON, face thumbnails) shown in UI.
 
 Environment variables are loaded from app/.env (see .env.example).
-Credential: rclone must have a 'gdrive' remote pre-configured (Ansible handles this).
+Credential: the app configures rclone from GDRIVE_TOKEN_JSON, or reuses an
+existing gdrive remote when running directly on a configured host.
 """
 import json
 import os
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 
@@ -21,10 +21,11 @@ from dotenv import load_dotenv
 import gradio as gr
 import requests
 
-import manifest
-
 # Load .env from the same directory as this file
 load_dotenv(Path(__file__).parent / ".env")
+
+import manifest
+import rclone_runtime
 
 # Maximum face thumbnails to download for preview
 MAX_PREVIEW_FACES = 12
@@ -41,8 +42,8 @@ def _gdrive_upload(local_path: str, gdrive_dest: str) -> None:
     """rclone copy <local_path> into gdrive:<gdrive_dest_dir>."""
     # rclone copy uploads a file into the destination directory
     dest_dir = gdrive_dest.rsplit("/", 1)[0] if "/" in gdrive_dest else gdrive_dest
-    result = subprocess.run(
-        ["rclone", "copy", local_path, f"gdrive:{dest_dir}", "-v"],
+    result = rclone_runtime.run(
+        ["copy", local_path, rclone_runtime.remote_path(dest_dir), "-v"],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
@@ -51,8 +52,8 @@ def _gdrive_upload(local_path: str, gdrive_dest: str) -> None:
 
 def _gdrive_list(gdrive_path: str) -> list[str]:
     """List filenames under gdrive:<gdrive_path>, return relative filenames."""
-    result = subprocess.run(
-        ["rclone", "lsf", f"gdrive:{gdrive_path}", "--files-only"],
+    result = rclone_runtime.run(
+        ["lsf", rclone_runtime.remote_path(gdrive_path), "--files-only"],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
@@ -70,8 +71,8 @@ def _gdrive_download_sample(gdrive_path: str, local_dir: str, limit: int) -> lis
             "Verify the worker completed successfully and wrote to the correct path."
         )
     for fname in png_files:
-        result = subprocess.run(
-            ["rclone", "copy", f"gdrive:{gdrive_path}/{fname}", local_dir, "-v"],
+        result = rclone_runtime.run(
+            ["copy", rclone_runtime.remote_path(f"{gdrive_path}/{fname}"), local_dir, "-v"],
             capture_output=True, text=True,
         )
         if result.returncode != 0:
@@ -208,11 +209,11 @@ def run_extract(
 
         if not ok:
             manifest.record_extract(ws, side, faces=0, gdrive_path=gdrive_dst)
-            yield ("No faces", f"⚠ No faces detected in {filename} (worker returned ok=false, faces={faces}). Check Raw Response.", raw, [])
+            yield ("No faces", f"No faces detected in {filename} (worker returned ok=false, faces={faces}). Check Raw Response.", raw, [])
             return
 
         manifest.record_extract(ws, side, faces=faces, gdrive_path=gdrive_dst)
-        yield ("Downloading previews", f"✓ {faces} face(s) extracted. Fetching previews…", raw, [])
+        yield ("Downloading previews", f"{faces} face(s) extracted. Fetching previews…", raw, [])
         with tempfile.TemporaryDirectory() as tmp:
             previews = _gdrive_download_sample(out_path, tmp, MAX_PREVIEW_FACES)
             persist_dir = tempfile.mkdtemp(prefix="fs_faces_")
@@ -222,7 +223,7 @@ def run_extract(
                 shutil.copy2(p, dst)
                 kept.append(dst)
 
-        summary = f"✓ Extracted {faces} face(s) → Drive: {out_path}"
+        summary = f"Extracted {faces} face(s) -> Drive: {out_path}"
         if kept:
             summary += f"\nShowing {len(kept)} of {faces} face(s) below."
         yield ("Done", summary, raw, kept)
@@ -322,4 +323,9 @@ with gr.Blocks(title="FaceSwap Extract") as demo:
 
 
 if __name__ == "__main__":
-    demo.launch(share=False, theme=gr.themes.Soft())
+    demo.launch(
+        share=False,
+        theme=gr.themes.Soft(),
+        server_name=_cfg("GRADIO_SERVER_NAME", "127.0.0.1"),
+        server_port=int(_cfg("GRADIO_SERVER_PORT", "7860")),
+    )

@@ -27,6 +27,7 @@
 
     plan: false     # set -e plan=true for dry-run (no state changes)
     destroy: false  # set -e destroy=true to tear down
+    refresh_only: false # set -e refresh_only=true to sync state from live resources
 
     # Provider toggles (override with -e)
     enable_vast: true
@@ -45,8 +46,6 @@
     vast_ssh_alias: "vast-training"
 
     # RunPod serverless endpoint knobs (sourced from group_vars/cloud.yml)
-    rp_workers_max: "{{ rp_workers_max }}"
-    rp_idle_timeout: "{{ rp_idle_timeout }}"
     rp_execution_timeout_ms: 200000
     rp_scaler_type: "QUEUE_DELAY"
     rp_scaler_value: 4
@@ -91,7 +90,7 @@
           TF_VAR_rp_execution_timeout_ms: "{{ rp_execution_timeout_ms }}"
           TF_VAR_rp_scaler_type: "{{ rp_scaler_type }}"
           TF_VAR_rp_scaler_value: "{{ rp_scaler_value }}"
-          TF_VAR_rp_gdrive_sa_json_b64: "{{ rp_gdrive_sa_json_b64 }}"
+          TF_VAR_rp_gdrive_refresh_token: "{{ (rp_gdrive_token_json | default('{}') | from_json).refresh_token | default('') }}"
           TF_VAR_rp_gdrive_root_folder_id: "{{ gdrive_root_folder_id }}"
 
     # ── Terraform plan (dry-run, no state changes) ────────────────────────────
@@ -119,29 +118,18 @@
         project_path: "{{ tf_dir }}"
         state: "{{ destroy | bool | ternary('absent', 'present') }}"
         force_init: true
-        variables:
-          vast_api_key: "{{ vast_admin_key if vast_admin_key | default('') else 'placeholder' }}"
-          runpod_api_key: "{{ runpod_api_key | default('') }}"
-          enable_vast: "{{ enable_vast | bool }}"
-          enable_runpod: "{{ enable_runpod | bool }}"
-          vast_gpu: "{{ vast_gpu }}"
-          vast_gpu_fallback: "{{ vast_gpu_fallback }}"
-          vast_num_gpus: "{{ vast_num_gpus }}"
-          vast_disk_gb: "{{ vast_disk_gb }}"
-          vast_image: "{{ vast_image }}"
-          vast_cuda_min: "{{ vast_cuda_min }}"
-          vast_max_price_per_hour: "{{ vast_max_price_per_hour }}"
-          vast_offer_type: "{{ vast_offer_type }}"
-          vast_datacenter_only: "{{ vast_datacenter_only | bool }}"
-          rp_image_name: "{{ rp_image_name }}"
-          rp_workers_max: "{{ rp_workers_max }}"
-          rp_idle_timeout: "{{ rp_idle_timeout }}"
-          rp_execution_timeout_ms: "{{ rp_execution_timeout_ms }}"
-          rp_scaler_type: "{{ rp_scaler_type }}"
-          rp_scaler_value: "{{ rp_scaler_value }}"
-          rp_gdrive_sa_json_b64: "{{ rp_gdrive_sa_json_b64 }}"
-          rp_gdrive_root_folder_id: "{{ gdrive_root_folder_id }}"
+      environment: "{{ tf_env }}"
       register: tf_result
+      when: not refresh_only | bool
+
+    - name: Terraform refresh-only
+      ansible.builtin.command:
+        argv: [terraform, apply, -refresh-only, -auto-approve, -input=false]
+        chdir: "{{ tf_dir }}"
+      environment: "{{ tf_env }}"
+      register: tf_refresh_result
+      changed_when: true
+      when: refresh_only | bool
 
     # ── Persist state to vault ─────────────────────────────────────────────────
     - name: Read Terraform state post-apply
@@ -190,7 +178,9 @@
     - name: Extract Terraform outputs
       ansible.builtin.set_fact:
         tf_out: "{{ tf_result.outputs }}"
-      when: not destroy | bool
+      when:
+        - not destroy | bool
+        - not refresh_only | bool
 
     # ── Update cloud.yml ───────────────────────────────────────────────────────
     - name: Update cc_instance_id in cloud.yml
@@ -199,7 +189,9 @@
         regexp: '^cc_instance_id:.*$'
         replace: >-
           cc_instance_id: "{{ (not destroy | bool) | ternary(tf_out.vast_instance_id.value | default(''), '') }}"
-      when: enable_vast | bool
+      when:
+        - enable_vast | bool
+        - not refresh_only | bool
 
     - name: Update rp_endpoint_id in cloud.yml
       ansible.builtin.replace:
@@ -207,7 +199,9 @@
         regexp: '^rp_endpoint_id:.*$'
         replace: >-
           rp_endpoint_id: "{{ (not destroy | bool) | ternary(tf_out.runpod_endpoint_id.value | default(''), '') }}"  # managed by cloud-provision-instance.yml — do not edit manually
-      when: enable_runpod | bool
+      when:
+        - enable_runpod | bool
+        - not refresh_only | bool
 
     # ── SSH config (VastAI provision only) ────────────────────────────────────
     - name: Read current ~/.ssh/config
@@ -287,11 +281,13 @@
               'Cost: $' + (tf_out.vast_cost_per_hour.value | default('?') | string) + '/hr',
               'SSH:  ssh ' + vast_ssh_alias,
               '',
-              'Next: ansible-playbook playbooks/cloud-setup.yml']
-             if (not destroy | bool and enable_vast | bool) else []) +
+              'Next: ansible-playbook playbooks/cloud-install-faceswap.yml']
+             if (not destroy | bool and not refresh_only | bool and enable_vast | bool) else []) +
             (['RunPod serverless endpoint ' + (tf_out.runpod_endpoint_id.value | default('?')) + ' READY',
               'Submit jobs: ansible-playbook playbooks/runpod-extract-faces.yml']
-             if (not destroy | bool and enable_runpod | bool) else []) +
+             if (not destroy | bool and not refresh_only | bool and enable_runpod | bool) else []) +
+            (['Terraform state refreshed from live resources and saved to vault.']
+             if (not destroy | bool and refresh_only | bool) else []) +
             (['All resources destroyed. State cleared from vault.']
              if destroy | bool else []) +
             ['================================================']

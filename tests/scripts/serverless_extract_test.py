@@ -1,5 +1,7 @@
 """Unit tests for the RunPod serverless extractor without the runpod SDK."""
 import importlib.util
+import json
+import os
 import sys
 import types
 import unittest
@@ -38,24 +40,40 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
-class R2TransferTest(unittest.IsolatedAsyncioTestCase):
-    async def test_r2_download_runs_rclone_copy(self):
+class GDriveTransferTest(unittest.IsolatedAsyncioTestCase):
+    async def test_gdrive_download_runs_rclone_copy(self):
         with patch.object(MODULE, "_run", AsyncMock(return_value="")) as mock_run:
-            await MODULE._r2_download("extract/in/alice.mp4", "/job/in")
+            await MODULE._gdrive_download("extract/in/alice.mp4", "/job/in")
         mock_run.assert_awaited_once()
         cmd = mock_run.call_args[0][0]
         self.assertIn("rclone copy", cmd)
-        self.assertIn("r2:", cmd)
+        self.assertIn("gdrive:", cmd)
         self.assertIn("/job/in", cmd)
 
-    async def test_r2_upload_runs_rclone_copy(self):
+    async def test_gdrive_upload_runs_rclone_copy(self):
         with patch.object(MODULE, "_run", AsyncMock(return_value="")) as mock_run:
-            await MODULE._r2_upload("/job/faces", "extract/faces/alice")
+            await MODULE._gdrive_upload("/job/faces", "extract/faces/alice")
         mock_run.assert_awaited_once()
         cmd = mock_run.call_args[0][0]
         self.assertIn("rclone copy", cmd)
-        self.assertIn("r2:", cmd)
+        self.assertIn("gdrive:", cmd)
         self.assertIn("/job/faces", cmd)
+
+
+class GDriveSetupTest(unittest.TestCase):
+    def test_oauth_token_configures_environment_remote(self):
+        token = json.dumps({"access_token": "access", "refresh_token": "refresh"})
+        with patch.object(MODULE, "GDRIVE_TOKEN_JSON", token), \
+                patch.object(MODULE, "GDRIVE_ROOT_FOLDER_ID", "folder-123"), \
+                patch.dict(os.environ, {}, clear=False):
+            MODULE._setup_gdrive()
+            self.assertEqual(os.environ["RCLONE_CONFIG_GDRIVE_TYPE"], "drive")
+            self.assertEqual(os.environ["RCLONE_CONFIG_GDRIVE_SCOPE"], "drive")
+            self.assertEqual(os.environ["RCLONE_CONFIG_GDRIVE_ROOT_FOLDER_ID"], "folder-123")
+            self.assertEqual(
+                json.loads(os.environ["RCLONE_CONFIG_GDRIVE_TOKEN"])["refresh_token"],
+                "refresh",
+            )
 
 
 class HandlerTest(unittest.IsolatedAsyncioTestCase):
@@ -64,8 +82,8 @@ class HandlerTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(MODULE, "_extract_async", AsyncMock(return_value=fake_result)) as mock_extract:
             result = await MODULE.handler({"id": "job-1", "input": {
                 "input_name": "alice.mp4",
-                "r2_src": "extract/in",
-                "r2_dst": "extract/faces",
+                "gdrive_src": "extract/in",
+                "gdrive_dst": "extract/faces",
             }})
         self.assertEqual(result, fake_result)
         mock_extract.assert_awaited_once()
@@ -76,7 +94,7 @@ class HandlerTest(unittest.IsolatedAsyncioTestCase):
 class SubmitLifecycleTest(unittest.TestCase):
     def _args(self):
         return Namespace(
-            input="alice.mp4", r2_src="extract/in", r2_dst="extract/faces",
+            input="alice.mp4", gdrive_src="extract/in", gdrive_dst="extract/faces",
             detector="retinaface", aligner="hrnet", extract_size=512,
             extract_norm="hist", dedupe_threshold=6, timeout=600,
         )

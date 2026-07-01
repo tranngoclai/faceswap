@@ -5,15 +5,12 @@
 #   gdrive:<ws>/train/input_B/ -> {{ fs_faces_b }}
 #
 # Usage:
-#   ansible-playbook playbooks/cloud-sync-train-inputs.yml \
-#     -e fs_workspace_name=alice-bob-001
+#   ansible-playbook playbooks/cloud-pull-train-faces.yml -e fs_workspace_name=alice-bob-001
 - name: Sync Drive train inputs to VastAI
   hosts: cloud
   gather_facts: false
   vars_files:
-    - ../group_vars/all.yml
-    - ../group_vars/cloud.yml
-    - ../group_vars/google-account-vault.yml
+    - ../group_vars/vault.yml
 
   pre_tasks:
     - name: Require workspace name
@@ -24,10 +21,10 @@
     - name: Require gdrive root folder ID
       ansible.builtin.assert:
         that: gdrive_root_folder_id | length > 0
-        fail_msg: "Set gdrive_root_folder_id in group_vars/cloud.yml"
+        fail_msg: "Set vault_gdrive_root_folder_id in vault.yml (run: ansible-playbook playbooks/vault-store-key.yml -e vault_key=vault_gdrive_root_folder_id -e vault_value=<folder-id>)"
 
   roles:
-    - faceswap_cloudsync
+    - faceswap_rclone
 
   tasks:
     - name: Ensure VastAI face dirs exist

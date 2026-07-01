@@ -12,6 +12,8 @@ resource "runpod_endpoint" "extract" {
 
   name        = var.rp_endpoint_name
   template_id = runpod_template.extract[count.index].id
+  compute_type = null
+  vcpu_count   = null
 
   # GPU selection: both models are CUDA 12.6-capable (RTX 40/30 series).
   gpu_type_ids = var.rp_gpu_type_ids

@@ -1,4 +1,3 @@
-boto3
 gradio
 python-dotenv
 requests

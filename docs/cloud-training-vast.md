@@ -42,16 +42,19 @@ Train faceswap trên GPU thuê tại [vast.ai](https://cloud.vast.ai).
 cd ansible
 ansible-galaxy collection install -r requirements.yml          # 1 lần duy nhất
 
-# 1. Mã hoá / rotate SA key → Ansible Vault
-ansible-playbook playbooks/vault-store-gdrive-sa-key.yml
+# 1. OAuth bằng tài khoản Google sở hữu Drive (chạy ở repository root)
+cd ..
+make app-auth
+cd ansible
 
-# 2. Chia sẻ Drive root folder cho SA email (xem output bước 1 để lấy email)
-#    Ghi folder ID vào group_vars/cloud.yml: gdrive_root_folder_id
+# 2. Lưu OAuth token vào Ansible Vault để inject cho RunPod worker
+GDRIVE_TOKEN_JSON="$(sed -n 's/^GDRIVE_TOKEN_JSON=//p' ../app/.env)" \
+  ansible-playbook playbooks/vault-store-runpod-gdrive-oauth.yml
 
-# 3. Cấu hình rclone gdrive local (SA key lấy từ vault — dùng bước 12 bên dưới)
+# 3. Ghi folder ID vào group_vars/cloud.yml: gdrive_root_folder_id
 
 # 4. Đặt endpoint secrets trong RunPod console:
-#    GDRIVE_SA_JSON_B64   — SA JSON base64 (xem vault-store-gdrive-sa-key.yml output)
+#    GDRIVE_TOKEN_JSON     — OAuth JSON có refresh_token
 #    GDRIVE_ROOT_FOLDER_ID — folder ID từ bước 2
 
 # 5. Upload video nguồn qua App → Drive <workspace>/source/A|B/
@@ -261,8 +264,8 @@ Extract faces theo **job, scale-to-zero** trên [RunPod Serverless](https://runp
 
 1. Tạo serverless endpoint trong **RunPod console** (image: `ghcr.io/tranngoclai/faceswap-sl:<tag>`) → ghi lại `RUNPOD_ENDPOINT_ID`.
 2. Đặt **endpoint secrets** (dùng cho worker xác thực vào Drive):
-   `GDRIVE_SA_JSON_B64` — service account JSON đã base64-encode (`ansible-playbook playbooks/vault-store-gdrive-sa-key.yml`).
-   `GDRIVE_ROOT_FOLDER_ID` — ID thư mục Drive gốc (share folder này cho SA email).
+   `GDRIVE_TOKEN_JSON` — OAuth token có refresh token. Tạo bằng `make app-auth`, sau đó lưu vào Vault bằng `playbooks/vault-store-runpod-gdrive-oauth.yml`.
+   `GDRIVE_ROOT_FOLDER_ID` — ID thư mục Drive gốc của tài khoản vừa OAuth.
 3. Lưu `runpod_api_key` trong Ansible Vault (`ansible/group_vars/vault.yml`).
 4. Set `rp_endpoint_id` và `gdrive_root_folder_id` trong `ansible/group_vars/cloud.yml`.
 5. Cấu hình rclone gdrive local: `ansible-playbook playbooks/cloud-install-sync-cron.yml` (dùng SA key từ `google-account-vault.yml`).
@@ -285,18 +288,25 @@ Tham số extract dùng chung `fs_*` (detector/aligner/extract_size/extract_norm
 `app/main.py` — giao diện web upload video, submit job, xem kết quả mà không cần CLI.
 
 ```bash
-# Cài deps (1 lần)
-./fsenv/bin/pip install gradio python-dotenv
-
-# Copy template và điền giá trị
+# Copy template và điền RUNPOD_* + GDRIVE_ROOT_FOLDER_ID trước khi chạy
 cp app/.env.example app/.env
-# chỉnh app/.env: RUNPOD_API_KEY, RUNPOD_ENDPOINT_ID, GDRIVE_ROOT_FOLDER_ID, GDRIVE_SA_JSON_B64
+
+# Đăng nhập tài khoản Google sở hữu Drive; token OAuth được ghi vào app/.env
+make app-auth
+
+# Chạy bằng Docker qua Makefile (đã đóng gói sẵn rclone)
+make app
+# Tuỳ chọn: APP_PORT=8080 APP_IMAGE=faceswap-app:dev make app
+
+# Hoặc chạy trực tiếp trên host: cài rclone + Python deps (1 lần)
+brew install rclone # macOS; Linux dùng package tương ứng
+./fsenv/bin/pip install -r app/requirements.txt
 
 ./fsenv/bin/python3 app/main.py
 # -> mở http://127.0.0.1:7860
 ```
 
-Env vars được load từ `app/.env` (dùng `python-dotenv`). Template đầy đủ ở `app/.env.example`. File `app/.env` đã được gitignore.
+Env vars được load từ `app/.env` (dùng `python-dotenv`). Template đầy đủ ở `app/.env.example`. File `app/.env` đã được gitignore. `make app-auth` mở OAuth Google trên trình duyệt và lưu refresh token vào `GDRIVE_TOKEN_JSON`; app dùng token đó để tự tạo remote `gdrive:` khi container khởi động.
 
 Flow: upload video → Drive `source/<side>/` → POST `/runsync` → worker extract → Drive `extract/<side>/` → hiện face count + Drive path + raw JSON. Tham số extract (detector/aligner/extract_size/extract_norm/dedupe/timeout) chỉnh trong **Advanced Options** trên UI.
 
@@ -310,7 +320,7 @@ Tất cả qua Ansible trong `ansible/` (chi tiết: [`ansible/README.md`](../an
 
 **Cloud (Vast):** `terraform-gpu` | `cloud-setup` | `cloud-train` | `cloud-board` | `cloud-cloudsync` | `cloud-rclone`. Var: `faceswap_req_file`, `fs_faces_a/fs_faces_b`, `fs_train_model_dir`, `fs_trainer`, `fs_batch_size`.
 
-**Serverless (RunPod + Google Drive):** `cloud-serverless-deploy` (health-check) | `cloud-serverless-extract`. Var: `rp_endpoint_id`, `sl_input`, `sl_side`, `sl_timeout`. Endpoint secrets: `GDRIVE_SA_JSON_B64`, `GDRIVE_ROOT_FOLDER_ID`. Ansible Vault: `runpod_api_key`.
+**Serverless (RunPod + Google Drive):** `cloud-serverless-deploy` (health-check) | `cloud-serverless-extract`. Var: `rp_endpoint_id`, `sl_input`, `sl_side`, `sl_timeout`. Endpoint secrets: `GDRIVE_TOKEN_JSON`, `GDRIVE_ROOT_FOLDER_ID`. Ansible Vault: `runpod_api_key`, `rp_gdrive_token_json`.
 
 ---
 
@@ -318,7 +328,7 @@ Tất cả qua Ansible trong `ansible/` (chi tiết: [`ansible/README.md`](../an
 
 - [ ] `cd ansible && ansible-galaxy collection install -r requirements.yml` (1 lần)
 - [ ] `vault-store-gdrive-sa-key.yml` → share Drive folder → ghi `gdrive_root_folder_id` vào `cloud.yml`
-- [ ] Đặt `GDRIVE_SA_JSON_B64` + `GDRIVE_ROOT_FOLDER_ID` trong RunPod endpoint secrets
+- [ ] Đặt `GDRIVE_TOKEN_JSON` + `GDRIVE_ROOT_FOLDER_ID` trong RunPod endpoint secrets
 - [ ] Upload video nguồn qua App → Drive `source/A|B/`; ghi `fs_workspace_name` vào `cloud.yml`
 - [ ] `runpod-extract-faces.yml` A + B → duyệt `extract/A|B/` → copy vào `train/input_A|B/`
 - [ ] `cloud-provision-instance.yml` → `cloud-install-faceswap.yml` → `cloud-pull-train-faces.yml` (terraform manages cc_instance_id / rp_pod_id)

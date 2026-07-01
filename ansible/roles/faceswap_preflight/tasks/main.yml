@@ -1,0 +1,74 @@
+---
+# Pre-training preflight checks: GPU, disk, face counts, no conflicting tmux session.
+
+- name: Check GPU is available (nvidia-smi)
+  ansible.builtin.command:
+    argv:
+      - nvidia-smi
+      - --query-gpu=name,memory.free
+      - --format=csv,noheader
+  register: gpu_check
+  changed_when: false
+  failed_when: gpu_check.rc != 0
+
+- name: Check disk space on /workspace
+  ansible.builtin.command:
+    argv: [df, -BG, /workspace]
+  register: df_out
+  changed_when: false
+
+- name: Assert sufficient disk space ({{ preflight_min_disk_gb }}GB free)
+  ansible.builtin.assert:
+    that: >-
+      (df_out.stdout_lines[1].split()[3] | regex_replace('G','') | int) >= preflight_min_disk_gb
+    fail_msg: "Less than {{ preflight_min_disk_gb }}GB free on /workspace. Free space before training."
+
+- name: Check face dir A has PNGs
+  ansible.builtin.find:
+    paths: "{{ fs_faces_a }}"
+    patterns: "*.png"
+  register: faces_a
+
+- name: Check face dir B has PNGs
+  ansible.builtin.find:
+    paths: "{{ fs_faces_b }}"
+    patterns: "*.png"
+  register: faces_b
+
+- name: Assert minimum face count (side A)
+  ansible.builtin.assert:
+    that: faces_a.matched >= preflight_min_faces
+    fail_msg: >-
+      Side A has only {{ faces_a.matched }} faces in {{ fs_faces_a }}.
+      Minimum is {{ preflight_min_faces }}. Run cloud-pull-train-faces.yml first.
+
+- name: Assert minimum face count (side B)
+  ansible.builtin.assert:
+    that: faces_b.matched >= preflight_min_faces
+    fail_msg: >-
+      Side B has only {{ faces_b.matched }} faces in {{ fs_faces_b }}.
+      Minimum is {{ preflight_min_faces }}. Run cloud-pull-train-faces.yml first.
+
+- name: Check for conflicting tmux training session
+  ansible.builtin.command:
+    argv: [tmux, has-session, -t, "{{ fs_train_session }}"]
+  register: tmux_check
+  changed_when: false
+  failed_when: false
+
+- name: Assert no conflicting session
+  ansible.builtin.assert:
+    that: tmux_check.rc != 0
+    fail_msg: >-
+      Training session '{{ fs_train_session }}' already running in tmux.
+      Attach with: tmux attach -t {{ fs_train_session }}
+
+- name: Preflight passed
+  ansible.builtin.debug:
+    msg:
+      - "✓ GPU: {{ gpu_check.stdout }}"
+      - "✓ Disk: sufficient"
+      - "✓ Side A: {{ faces_a.matched }} faces"
+      - "✓ Side B: {{ faces_b.matched }} faces"
+      - "✓ No conflicting training session"
+      - "Ready to run: ansible-playbook playbooks/cloud-start-training.yml"
