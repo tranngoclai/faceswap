@@ -15,7 +15,7 @@ ansible-galaxy collection install -r requirements.yml   # one-time
 
 - `cloud` → the vast.ai GPU instance. `ansible_host=vast-training` is a
   `~/.ssh/config` Host alias (host/port/key live in ssh config).
-- `local` → this control machine (Docker extract/convert + key minting).
+- `local` → this control machine (Docker extract/convert).
 
 Config defaults live in `group_vars/` (`all.yml`, `cloud.yml`, `local.yml`).
 Override anything at run time with `-e key=value`.
@@ -26,7 +26,7 @@ Encrypted in `group_vars/vault.yml` (AES256). Edit with `ansible-vault edit grou
 
 | Variable | Description |
 |---|---|
-| `vast_admin_key` | Vast.ai admin/primary API key — used by `provision-vast-instance.yml` (create instances) |
+| `vast_admin_key` | Vast.ai admin/primary API key — used by `terraform-gpu.yml` (create instances) |
 | `runpod_api_key` | RunPod API key for submitting serverless jobs |
 
 Google Drive service account JSON is stored separately in `group_vars/google-account-vault.yml`
@@ -47,7 +47,7 @@ Google Drive service account JSON is stored separately in `group_vars/google-acc
 | `gdrive_train_model` | Drive destination for model artifacts (derived from workspace + train/model) |
 | `cc_sync_src` | Local VastAI dir to push (default: `fs_train_model_dir` = `/workspace/train/model`) |
 | `cc_sync_dst` | Drive destination for sync (derived: `gdrive_train_model`) |
-| `cc_instance_id` | Updated automatically by `provision-vast-instance.yml` — do not edit manually |
+| `cc_instance_id` | Updated automatically by `terraform-gpu.yml` — do not edit manually |
 | `rp_endpoint_id` | RunPod endpoint ID (created once in RunPod console) |
 
 ## Cloud (vast.ai) — setup & train
@@ -65,15 +65,14 @@ Google Drive service account JSON is stored separately in `group_vars/google-acc
 
 Training params: `-e fs_trainer=original -e fs_batch_size=16` (see `group_vars/cloud.yml`).
 
-## Vast.ai — key & instance management
+## Vast.ai — instance management
 
 ```bash
-# Generate scoped API key (admin key comes from vault — vast_admin_key)
-ansible-playbook playbooks/provision-key.yml
-#   add -e set_account_env_var=false to update Ansible Vault only
+# Provision VastAI instance via Terraform (writes cc_instance_id back to cloud.yml)
+ansible-playbook playbooks/terraform-gpu.yml
 
-# Provision a new VastAI instance (writes cc_instance_id back to cloud.yml)
-ansible-playbook playbooks/provision-vast-instance.yml
+# Destroy instance
+ansible-playbook playbooks/terraform-gpu.yml -e destroy=true
 ```
 
 ## RunPod Serverless extract
@@ -117,13 +116,15 @@ Apple Silicon / Linux with native torch: add `-e fs_local_backend=native`
 ```
 provision-gdrive-sa-key → (set RunPod endpoint secrets) →
   cloud-serverless-extract (A + B) → curate in Drive →
-  provision-vast-instance → cloud-setup →
+  terraform-gpu → cloud-setup →
   cloud-sync-train-inputs → cloud-train-preflight →
-  cloud-train → cloud-cloudsync (cron) → (done, destroy instance)
+  cloud-train → cloud-cloudsync (cron) → (done, terraform-gpu -e destroy=true)
 ```
 
 ## Removed
 
-- `vast_deploy_key` role — deleted; replaced by gdrive service account auth.
+- `provision-vast-instance.yml` — replaced by `terraform-gpu.yml`.
+- `provision-key.yml` + `vast_cloudcopy_key` role — vastai cloud copy replaced by rclone + gdrive.
+- `vast_deploy_key` role — replaced by gdrive service account auth.
 - `vast_api_key` vault variable — renamed to `vast_admin_key`.
 - R2/Cloudflare storage — replaced by Google Drive throughout.

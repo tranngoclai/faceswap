@@ -17,7 +17,7 @@ Train faceswap trên GPU thuê tại [vast.ai](https://cloud.vast.ai).
 | RunPod: serverless health-check | `ansible-playbook playbooks/cloud-serverless-deploy.yml` |
 | RunPod: serverless extract | `ansible-playbook playbooks/cloud-serverless-extract.yml -e sl_input=alice.mp4 -e sl_side=A` |
 | RunPod: provision API key | `ansible-playbook playbooks/provision-runpod-key.yml -e runpod_api_key=rp_xxx` |
-| Tạo scoped API key | `ansible-playbook playbooks/provision-key.yml` |
+| Inject vault key | `ansible-playbook playbooks/provision-vault-key.yml -e vault_key=x -e vault_value=y` |
 | Local: build CPU image | `ansible-playbook playbooks/local-build.yml` |
 | Local: extract→dedupe→sharp | `ansible-playbook playbooks/local-extract.yml -e fs_input=alice.mp4 -e fs_ws=alice` |
 | Local: dedupe / sharp riêng | `ansible-playbook playbooks/local-dedupe.yml` · `local-sharp.yml` |
@@ -309,7 +309,7 @@ Tất cả qua Ansible trong `ansible/` (chi tiết: [`ansible/README.md`](../an
 
 **Local:** `local-build` | `local-extract` (detect→dedupe→sharp→review) | `local-dedupe` | `local-sharp` | `local-convert`. Var: `fs_ws`, `fs_input`, `fs_ref_dir`, `fs_dedup_threshold`, `fs_blur_threshold`, `fs_detector`/`fs_aligner`, `fs_local_backend` (docker|native).
 
-**Cloud (Vast):** `cloud-setup` | `cloud-train` | `cloud-board` | `cloud-cloudsync` | `cloud-rclone` | `provision-key`. Var: `faceswap_req_file`, `fs_faces_a/fs_faces_b`, `fs_train_model_dir`, `fs_trainer`, `fs_batch_size`.
+**Cloud (Vast):** `terraform-gpu` | `cloud-setup` | `cloud-train` | `cloud-board` | `cloud-cloudsync` | `cloud-rclone`. Var: `faceswap_req_file`, `fs_faces_a/fs_faces_b`, `fs_train_model_dir`, `fs_trainer`, `fs_batch_size`.
 
 **Serverless (RunPod + Google Drive):** `cloud-serverless-deploy` (health-check) | `cloud-serverless-extract`. Var: `rp_endpoint_id`, `sl_input`, `sl_side`, `sl_timeout`. Endpoint secrets: `GDRIVE_SA_JSON_B64`, `GDRIVE_ROOT_FOLDER_ID`. Ansible Vault: `runpod_api_key`.
 
