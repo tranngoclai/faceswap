@@ -21,6 +21,8 @@ from dotenv import load_dotenv
 import gradio as gr
 import requests
 
+import manifest
+
 # Load .env from the same directory as this file
 load_dotenv(Path(__file__).parent / ".env")
 
@@ -168,6 +170,7 @@ def run_extract(
     try:
         yield ("Uploading", f"Uploading {filename} to Drive ({gdrive_dest_file})…", "", [])
         _gdrive_upload(video_path, gdrive_dest_file)
+        manifest.record_source(ws, side, filename)
 
         yield ("Running", "Video uploaded. Submitting extract job to RunPod (polling until done)…", "", [])
         payload = {
@@ -204,9 +207,11 @@ def run_extract(
         out_path = output.get("gdrive_dst")
 
         if not ok:
+            manifest.record_extract(ws, side, faces=0, gdrive_path=gdrive_dst)
             yield ("No faces", f"⚠ No faces detected in {filename} (worker returned ok=false, faces={faces}). Check Raw Response.", raw, [])
             return
 
+        manifest.record_extract(ws, side, faces=faces, gdrive_path=gdrive_dst)
         yield ("Downloading previews", f"✓ {faces} face(s) extracted. Fetching previews…", raw, [])
         with tempfile.TemporaryDirectory() as tmp:
             previews = _gdrive_download_sample(out_path, tmp, MAX_PREVIEW_FACES)

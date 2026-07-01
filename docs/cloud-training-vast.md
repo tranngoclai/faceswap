@@ -8,6 +8,7 @@ Train faceswap trên GPU thuê tại [vast.ai](https://cloud.vast.ai).
 
 | Việc | Lệnh Ansible (chạy trong `ansible/`) |
 |------|--------------------------------------|
+| Cloud: provision VastAI/RunPod | `ansible-playbook playbooks/terraform-gpu.yml` (default: VastAI) or `-e enable_runpod=true -e enable_vast=false` |
 | Cloud: install + GPU check | `ansible-playbook playbooks/cloud-setup.yml` |
 | Cloud: train (tmux) | `ansible-playbook playbooks/cloud-train.yml` |
 | Cloud: TensorBoard | `ansible-playbook playbooks/cloud-board.yml` |
@@ -15,6 +16,7 @@ Train faceswap trên GPU thuê tại [vast.ai](https://cloud.vast.ai).
 | Cloud: rclone push/pull | `ansible-playbook playbooks/cloud-rclone.yml -e rclone_direction=push -e rclone_remote=…` |
 | RunPod: serverless health-check | `ansible-playbook playbooks/cloud-serverless-deploy.yml` |
 | RunPod: serverless extract | `ansible-playbook playbooks/cloud-serverless-extract.yml -e sl_input=alice.mp4 -e sl_side=A` |
+| RunPod: provision API key | `ansible-playbook playbooks/provision-runpod-key.yml -e runpod_api_key=rp_xxx` |
 | Tạo scoped API key | `ansible-playbook playbooks/provision-key.yml` |
 | Local: build CPU image | `ansible-playbook playbooks/local-build.yml` |
 | Local: extract→dedupe→sharp | `ansible-playbook playbooks/local-extract.yml -e fs_input=alice.mp4 -e fs_ws=alice` |
@@ -63,8 +65,8 @@ ansible-playbook playbooks/cloud-serverless-extract.yml -e sl_input=bob.mp4   -e
 # 7. Duyệt mặt trong Drive extract/A|B/
 #    Copy approved faces → Drive train/input_A/ và train/input_B/
 
-# 8. Provision VastAI instance + setup
-ansible-playbook playbooks/provision-vast-instance.yml
+# 8. Provision VastAI instance (Terraform) + setup
+ansible-playbook playbooks/terraform-gpu.yml
 ansible-playbook playbooks/cloud-setup.yml
 
 # 9. Sync Drive inputs → VastAI /workspace/train/
@@ -320,7 +322,7 @@ Tất cả qua Ansible trong `ansible/` (chi tiết: [`ansible/README.md`](../an
 - [ ] Đặt `GDRIVE_SA_JSON_B64` + `GDRIVE_ROOT_FOLDER_ID` trong RunPod endpoint secrets
 - [ ] Upload video nguồn qua App → Drive `source/A|B/`; ghi `fs_workspace_name` vào `cloud.yml`
 - [ ] `cloud-serverless-extract.yml` A + B → duyệt `extract/A|B/` → copy vào `train/input_A|B/`
-- [ ] `provision-vast-instance.yml` → `cloud-setup.yml` → `cloud-sync-train-inputs.yml`
+- [ ] `terraform-gpu.yml` → `cloud-setup.yml` → `cloud-sync-train-inputs.yml` (terraform manages cc_instance_id / rp_pod_id)
 - [ ] `cloud-train-preflight.yml` → `cloud-train.yml` → `cloud-cloudsync.yml` (cron)
 - [ ] Xong → destroy instance; `local-convert.yml` để ghép mặt
 

@@ -1,0 +1,6 @@
+---
+# Auto-managed by terraform-gpu.yml. Do not edit tf_state_b64 by hand.
+# Encrypt with: ansible-vault encrypt ansible/group_vars/terraform-state-vault.yml
+
+# Base64-encoded terraform.tfstate; empty string = no prior state (first run).
+tf_state_b64: ""

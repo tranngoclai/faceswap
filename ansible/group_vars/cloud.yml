@@ -51,8 +51,9 @@ cc_sync_src: "{{ fs_train_model_dir }}"
 cc_sync_dst: "{{ gdrive_train_model }}"
 cc_interval_min: 10
 
-# VastAI instance ID (updated by provision-vast-instance.yml — do not edit manually).
-cc_instance_id: ""
+# Instance IDs — updated by terraform-provision.yml / terraform-destroy.yml. Do not edit manually.
+cc_instance_id: ""   # VastAI contract ID
+rp_pod_id: ""        # RunPod pod ID
 
 # ---------------------------------------------------------------------------
 # RunPod Serverless extract endpoint (scripts/cloud/serverless_extract.py).

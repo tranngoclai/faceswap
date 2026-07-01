@@ -88,8 +88,16 @@ app/.env
 # App
 !app/
 !app/main.py
+!app/manifest.py
 !app/.env.example
 !app/requirements.txt
 
 # App env
 app/.env
+
+# Terraform — local provider cache and state (state lives in Ansible Vault)
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+*.tfplan

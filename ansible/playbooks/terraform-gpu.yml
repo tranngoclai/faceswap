@@ -1,0 +1,235 @@
+---
+# Provision or destroy GPU instance(s) via Terraform.
+# Terraform state is stored encrypted in Ansible Vault.
+#
+# Usage:
+#   ansible-playbook playbooks/terraform-gpu.yml                                    # provision VastAI (default)
+#   ansible-playbook playbooks/terraform-gpu.yml -e destroy=true                    # destroy
+#   ansible-playbook playbooks/terraform-gpu.yml -e enable_runpod=true -e enable_vast=false
+#   ansible-playbook playbooks/terraform-gpu.yml -e vast_gpu="RTX 3090" -e vast_max_price_per_hour=0.80
+#
+# After provision, run:
+#   ansible-playbook playbooks/cloud-setup.yml
+
+- name: GPU instance lifecycle via Terraform
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../group_vars/vault.yml
+    - ../group_vars/terraform-state-vault.yml
+  vars:
+    tf_dir: "{{ playbook_dir }}/../../terraform"
+    tf_state_file: "{{ tf_dir }}/terraform.tfstate"
+    vault_state_file: "{{ playbook_dir }}/../group_vars/terraform-state-vault.yml"
+    vault_pass_file: "~/.config/ansible/vault-pass"
+
+    destroy: false  # set -e destroy=true to tear down
+
+    # Provider toggles (override with -e)
+    enable_vast: true
+    enable_runpod: false
+
+    # VastAI knobs
+    vast_gpu: "RTX 4090"
+    vast_gpu_fallback: "RTX 3090"
+    vast_disk_gb: 60
+    vast_image: "vastai/base-image"
+    vast_max_price_per_hour: 1.50
+    vast_ssh_alias: "vast-training"
+
+    # RunPod knobs
+    runpod_pod_name: "faceswap-training"
+    runpod_container_disk_gb: 60
+    runpod_cloud_type: "SECURE"
+
+  tasks:
+    # ── Restore state from vault ───────────────────────────────────────────────
+    - name: Restore Terraform state from vault
+      ansible.builtin.copy:
+        content: "{{ tf_state_b64 | b64decode }}"
+        dest: "{{ tf_state_file }}"
+        mode: "0600"
+      when: tf_state_b64 | default('') | length > 0
+
+    - name: Abort destroy — no state in vault
+      ansible.builtin.fail:
+        msg: "tf_state_b64 is empty in vault — nothing to destroy."
+      when:
+        - destroy | bool
+        - tf_state_b64 | default('') | length == 0
+
+    # ── Terraform apply / destroy ──────────────────────────────────────────────
+    - name: "Terraform {{ destroy | bool | ternary('destroy', 'apply') }}"
+      community.general.terraform:
+        project_path: "{{ tf_dir }}"
+        state: "{{ destroy | bool | ternary('absent', 'present') }}"
+        force_init: true
+        variables:
+          vast_api_key: "{{ vast_admin_key }}"
+          runpod_api_key: "{{ runpod_api_key | default('') }}"
+          enable_vast: "{{ enable_vast | bool }}"
+          enable_runpod: "{{ enable_runpod | bool }}"
+          vast_gpu: "{{ vast_gpu }}"
+          vast_gpu_fallback: "{{ vast_gpu_fallback }}"
+          vast_disk_gb: "{{ vast_disk_gb }}"
+          vast_max_price_per_hour: "{{ vast_max_price_per_hour }}"
+          vast_image: "{{ vast_image }}"
+          runpod_pod_name: "{{ runpod_pod_name }}"
+          runpod_container_disk_gb: "{{ runpod_container_disk_gb }}"
+          runpod_cloud_type: "{{ runpod_cloud_type }}"
+      register: tf_result
+
+    # ── Persist state to vault ─────────────────────────────────────────────────
+    - name: Read Terraform state post-apply
+      ansible.builtin.slurp:
+        src: "{{ tf_state_file }}"
+      register: tf_state_raw
+      when: not destroy | bool
+
+    - name: Write vault file with new state
+      ansible.builtin.copy:
+        content: |
+          ---
+          # Managed by terraform-gpu.yml — do not edit tf_state_b64 by hand.
+          tf_state_b64: "{{ tf_state_raw.content }}"
+        dest: "{{ vault_state_file }}"
+        mode: "0600"
+      when: not destroy | bool
+
+    - name: Write vault file with cleared state
+      ansible.builtin.copy:
+        content: |
+          ---
+          # Managed by terraform-gpu.yml — state cleared after destroy.
+          tf_state_b64: ""
+        dest: "{{ vault_state_file }}"
+        mode: "0600"
+      when: destroy | bool
+
+    - name: Encrypt vault state file
+      ansible.builtin.command:
+        cmd: >
+          ansible-vault encrypt
+          --vault-password-file {{ vault_pass_file }}
+          {{ vault_state_file }}
+      changed_when: true
+
+    # ── Post-destroy cleanup ───────────────────────────────────────────────────
+    - name: Remove local terraform.tfstate after destroy
+      ansible.builtin.file:
+        path: "{{ tf_state_file }}"
+        state: absent
+      when: destroy | bool
+
+    # ── Parse outputs (provision only) ────────────────────────────────────────
+    # community.general.terraform exposes outputs at tf_result.outputs
+    - name: Extract Terraform outputs
+      ansible.builtin.set_fact:
+        tf_out: "{{ tf_result.outputs }}"
+      when: not destroy | bool
+
+    # ── Update cloud.yml ───────────────────────────────────────────────────────
+    - name: Update cc_instance_id in cloud.yml
+      ansible.builtin.replace:
+        path: "{{ playbook_dir }}/../group_vars/cloud.yml"
+        regexp: '^cc_instance_id:.*$'
+        replace: >-
+          cc_instance_id: "{{ (not destroy | bool) | ternary(tf_out.vast_instance_id.value | default(''), '') }}"
+      when: enable_vast | bool
+
+    - name: Update rp_pod_id in cloud.yml
+      ansible.builtin.replace:
+        path: "{{ playbook_dir }}/../group_vars/cloud.yml"
+        regexp: '^rp_pod_id:.*$'
+        replace: >-
+          rp_pod_id: "{{ (not destroy | bool) | ternary(tf_out.runpod_pod_id.value | default(''), '') }}"
+      when: enable_runpod | bool
+
+    # ── SSH config (VastAI provision only) ────────────────────────────────────
+    - name: Read current ~/.ssh/config
+      ansible.builtin.slurp:
+        src: "~/.ssh/config"
+      register: ssh_config_raw
+      failed_when: false
+      when:
+        - not destroy | bool
+        - enable_vast | bool
+
+    - name: Remove existing SSH alias block
+      ansible.builtin.set_fact:
+        ssh_config_clean: >-
+          {{ (ssh_config_raw.content | default('') | b64decode)
+             | regex_replace('(?ms)^Host[ \t]+' + vast_ssh_alias + '[^\n]*\n(?:(?!^Host[ \t]).*\n?)*', '') }}
+      when:
+        - not destroy | bool
+        - enable_vast | bool
+
+    - name: Write updated ~/.ssh/config
+      ansible.builtin.copy:
+        content: |
+          {{ ssh_config_clean }}
+          Host {{ vast_ssh_alias }}
+              HostName {{ tf_out.vast_ssh_host.value }}
+              Port {{ tf_out.vast_ssh_port.value }}
+              User root
+              IdentityFile ~/.ssh/id_ed25519
+              StrictHostKeyChecking no
+        dest: "~/.ssh/config"
+        mode: "0600"
+      when:
+        - not destroy | bool
+        - enable_vast | bool
+        - tf_out.vast_ssh_host.value is defined
+
+    - name: Wait for SSH port
+      ansible.builtin.wait_for:
+        host: "{{ tf_out.vast_ssh_host.value }}"
+        port: "{{ tf_out.vast_ssh_port.value }}"
+        timeout: 120
+      when:
+        - not destroy | bool
+        - enable_vast | bool
+        - tf_out.vast_ssh_host.value is defined
+
+    - name: Smoke-test GPU (nvidia-smi)
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -o
+          - StrictHostKeyChecking=no
+          - -o
+          - ConnectTimeout=10
+          - -p
+          - "{{ tf_out.vast_ssh_port.value | string }}"
+          - "root@{{ tf_out.vast_ssh_host.value }}"
+          - "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader"
+      register: gpu_check
+      changed_when: false
+      when:
+        - not destroy | bool
+        - enable_vast | bool
+        - tf_out.vast_ssh_host.value is defined
+
+    # ── Summary ────────────────────────────────────────────────────────────────
+    - name: Done
+      ansible.builtin.debug:
+        msg: "{{ summary_lines }}"
+      vars:
+        summary_lines: >-
+          {{
+            ['================================================'] +
+            (['VastAI instance ' + (tf_out.vast_instance_id.value | default('?')) + ' READY',
+              'GPU:  ' + (gpu_check.stdout | default('?')),
+              'Cost: $' + (tf_out.vast_cost_per_hour.value | default('?') | string) + '/hr',
+              'SSH:  ssh ' + vast_ssh_alias,
+              '',
+              'Next: ansible-playbook playbooks/cloud-setup.yml']
+             if (not destroy | bool and enable_vast | bool) else []) +
+            (['RunPod pod ' + (tf_out.runpod_pod_id.value | default('?')) + ' READY',
+              'IP:   ' + (tf_out.runpod_public_ip.value | default('(no public IP)')),
+              'Cost: ' + (tf_out.runpod_cost_per_hr.value | default('?') | string) + ' credits/hr']
+             if (not destroy | bool and enable_runpod | bool) else []) +
+            (['All resources destroyed. State cleared from vault.']
+             if destroy | bool else []) +
+            ['================================================']
+          }}

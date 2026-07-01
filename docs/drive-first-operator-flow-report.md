@@ -122,7 +122,7 @@ Practical secure baseline:
 - Use admin/primary VastAI key only for local provisioning/key-minting.
 - Use scoped VastAI runtime key for cloud-copy or runtime tasks where possible.
 - Put Google service account file on cloud runtime only during setup/use, mode `0600`.
-- Keep RunPod endpoint secrets managed outside app code; rotate if exposed.
+- RunPod API key stored in `ansible/group_vars/vault.yml` (encrypted), managed via `provision-runpod-key.yml` playbook; keep separate from app/endpoint secrets.
 - Use one env only, but keep names explicit to avoid accidental cross-run overwrite.
 
 Known risks to address:
@@ -148,7 +148,7 @@ Known risks to address:
 5. Add playbook to sync Drive train input folders to VastAI training dirs.
 6. Add preflight train validation: train input A/B exists, face count sufficient, images readable, Drive read/write works, disk OK, GPU OK, no conflicting training session.
 7. Update `docs/cloud-training-vast.md` and `ansible/README.md` to make Drive-first flow canonical.
-8. Fix VastAI provisioning key semantics and stale `cc_instance_id` replacement.
+8. **✓ RESOLVED:** VastAI provisioning now via Terraform (terraform-gpu.yml) with proper key semantics; `cc_instance_id`/`rp_pod_id` auto-managed and stored in cloud.yml.
 9. Make all RunPod submit callers poll `/status/{job_id}` to terminal state when `/runsync` returns `IN_PROGRESS`.
 10. Define `manifest.json` enough to record workspace name, root folder ID, folder IDs, source files, extract outputs, and schema version.
 
@@ -197,8 +197,8 @@ This report recommends that `gdrive_root_folder_id` points directly at the share
 7. Operator manually curates in Google Drive by copying approved faces directly to the train input folders:
    `train/faceswap/<workspace-name>/train/input_A/` and `train/faceswap/<workspace-name>/train/input_B/`
 
-8. Provision and setup VastAI:
-   `ansible-playbook playbooks/provision-vast-instance.yml`
+8. Provision and setup VastAI (via Terraform):
+   `ansible-playbook playbooks/terraform-gpu.yml`
    `ansible-playbook playbooks/cloud-setup.yml`
 
 9. Sync Drive train input folders to VastAI training dirs:

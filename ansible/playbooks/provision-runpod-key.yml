@@ -1,0 +1,63 @@
+---
+# Inject RunPod API key into vault.yml (full-file encrypted vault).
+# Run once or re-run to rotate the key.
+#
+# Usage:
+#   ansible-playbook playbooks/provision-runpod-key.yml \
+#     -e runpod_api_key=rp_xxxxxxxxxxxxxxxx
+
+- name: Provision RunPod API key into vault.yml
+  hosts: localhost
+  gather_facts: false
+  vars:
+    vault_file: "{{ playbook_dir }}/../group_vars/vault.yml"
+    vault_pass_file: "~/.config/ansible/vault-pass"
+    tmp_vault: "/tmp/ansible_vault_plain.yml"
+
+  tasks:
+    - name: Require runpod_api_key
+      ansible.builtin.assert:
+        that: runpod_api_key | default('') | length > 0
+        fail_msg: "Pass the key with: -e runpod_api_key=rp_xxxxxxxxxxxxxxxx"
+
+    - name: Require vault password file
+      ansible.builtin.stat:
+        path: "{{ vault_pass_file }}"
+      register: _vp
+      failed_when: not _vp.stat.exists
+
+    - name: Decrypt vault.yml to temp file
+      ansible.builtin.command:
+        cmd: >
+          ansible-vault decrypt
+          --vault-password-file {{ vault_pass_file }}
+          --output {{ tmp_vault }}
+          {{ vault_file }}
+      changed_when: true
+      no_log: true
+
+    - name: Upsert runpod_api_key in plaintext vault
+      ansible.builtin.lineinfile:
+        path: "{{ tmp_vault }}"
+        regexp: '^runpod_api_key:'
+        line: 'runpod_api_key: "{{ runpod_api_key }}"'
+      no_log: true
+
+    - name: Re-encrypt vault.yml
+      ansible.builtin.command:
+        cmd: >
+          ansible-vault encrypt
+          --vault-password-file {{ vault_pass_file }}
+          --output {{ vault_file }}
+          {{ tmp_vault }}
+      changed_when: true
+      no_log: true
+
+    - name: Remove temp plaintext file
+      ansible.builtin.file:
+        path: "{{ tmp_vault }}"
+        state: absent
+
+    - name: Done
+      ansible.builtin.debug:
+        msg: "runpod_api_key injected into vault.yml. Safe to commit."
