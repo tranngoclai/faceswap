@@ -1,11 +1,42 @@
 ---
-# Mirrors setup-vast.sh `cloudsync`: on-instance cron runs `vastai cloud copy`
-# to push the data dir to a Drive connection. Key via VAST_API_KEY (no key file).
+# On-instance cron: rclone copy to push training data to Google Drive every N minutes.
+# Authenticates via GDRIVE_SA_JSON set as a Vast.ai instance environment variable
+# (Vast console → Instance → Environment Variables).
 
-- name: Require a scoped API key
+- name: Require gdrive_sa_json (from vault.yml)
   ansible.builtin.assert:
-    that: vast_api_key | length > 0
-    fail_msg: "Set VAST_API_KEY (scoped cloud-copy key), e.g. export VAST_API_KEY=... before running."
+    that: gdrive_sa_json | length > 0
+    fail_msg: "Run playbooks/provision-gdrive-sa-key.yml to populate vault.yml first."
+
+- name: Ensure gdrive credentials dir
+  ansible.builtin.file:
+    path: /root/.config/gdrive
+    state: directory
+    mode: "0700"
+
+- name: Write service account JSON to disk
+  ansible.builtin.copy:
+    content: "{{ gdrive_sa_json }}"
+    dest: /root/.config/gdrive/service-account.json
+    mode: "0600"
+  no_log: true
+
+- name: Configure rclone gdrive remote (service account)
+  ansible.builtin.command:
+    argv:
+      - rclone
+      - config
+      - create
+      - gdrive
+      - drive
+      - scope=drive
+      - service_account_file=/root/.config/gdrive/service-account.json
+  changed_when: false
+
+- name: Require rclone_remote
+  ansible.builtin.assert:
+    that: rclone_remote | length > 0
+    fail_msg: "Set rclone_remote in group_vars/cloud.yml, e.g. gdrive:faceswap-train"
 
 - name: Deploy cloud-sync runner
   ansible.builtin.template:
@@ -13,15 +44,13 @@
     dest: /root/cloud-sync.sh
     mode: "0755"
 
-# cron supports environment lines; cron jobs run with a minimal env so the key
-# must be set here for `vastai` to authenticate.
-- name: Put VAST_API_KEY in the crontab environment
+- name: Remove stale VAST_API_KEY crontab env line (if present from old setup)
   ansible.builtin.cron:
     name: VAST_API_KEY
     env: true
-    value: "{{ vast_api_key }}"
+    state: absent
 
-- name: Schedule the cloud-copy sync
+- name: Schedule the rclone cloud-sync
   ansible.builtin.cron:
     name: faceswap-cloud-sync
     minute: "*/{{ cc_interval_min }}"

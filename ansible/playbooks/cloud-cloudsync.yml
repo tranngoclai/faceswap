@@ -1,6 +1,6 @@
 ---
-# Install the on-instance cron that auto-runs `vastai cloud copy` to Drive.
-# vast_api_key is loaded automatically from ~/.config/vastai/vast_cloudsync_key.
+# Install the on-instance cron that auto-runs `rclone copy` to Google Drive.
+# Prereq: GDRIVE_SA_JSON set as a Vast.ai instance environment variable.
 #   ansible-playbook playbooks/cloud-cloudsync.yml
 - name: Faceswap cloud-sync cron
   hosts: cloud

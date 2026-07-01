@@ -9,9 +9,9 @@ faceswap_pip: "/venv/main/bin/pip"
 faceswap_req_file: "requirements/requirements_nvidia_13.txt"
 faceswap_skip_torch: false                   # true = install base deps only (keep image torch)
 
-# Key hierarchy (stored at ~/.config/vastai/, env var overrides file):
-#   vast_api_key      → faceswap-cloudsync  (instance_read+write) → cloud sync cron on GPU instance
-# Serverless extract now runs on RunPod (see RUNPOD_API_KEY below), not Vast.
+# Vast API key — used by vastai CLI on the control machine (instance management).
+# Cloud sync now uses rclone + Google service account; VAST_API_KEY is no longer
+# needed for the on-instance cron job.
 vast_api_key: >-
   {{ lookup('env', 'VAST_API_KEY')
      or lookup('file', '~/.config/vastai/vast_cloudsync_key', errors='ignore') | default('') }}
@@ -35,15 +35,11 @@ fs_tb_port: 6006
 fs_train_session: "fs"
 fs_board_session: "tb"
 
-# vast.ai Cloud Copy auto-sync (instance -> Drive connection).
-cc_instance_id: "43192617"
-cc_connection_id: "42775"                     # from: vastai show connections
-cc_sync_src: "/workspace/train"
-cc_dst: "/faceswap-train"
-cc_interval_min: 10
-
-# rclone remote (alternative to vast Cloud Copy). e.g. "gdrive:faceswap-model"
-rclone_remote: ""
+# rclone auto-sync (instance -> Google Drive via service account).
+# GDRIVE_SA_JSON must be set in Vast.ai instance environment variables.
+cc_sync_src: "/workspace/train"               # local dir to push
+cc_interval_min: 10                           # cron frequency in minutes
+rclone_remote: "gdrive:faceswap-train"        # rclone remote:path destination
 
 # ---------------------------------------------------------------------------
 # RunPod Serverless extract endpoint (scripts/cloud/serverless_extract.py).
@@ -52,6 +48,9 @@ rclone_remote: ""
 # endpoint itself is created once in the RunPod console (no Ansible deploy).
 # ---------------------------------------------------------------------------
 # Absolute path (the `command` module does not expand ~); interpreter with `requests`.
+runpod_api_key: >-
+  {{ lookup('env', 'RUNPOD_API_KEY')
+     or lookup('file', '~/.config/runpod/key', errors='ignore') | default('') }}
 rp_python: "{{ lookup('env', 'HOME') }}/.local/pipx/venvs/runpod/bin/python3"
 rp_endpoint_id: "6kpdf1l7s6jq7t"              # RunPod endpoint ID
 

@@ -1,7 +1,8 @@
 ---
-# rclone push/pull the model dir <-> a remote (alternative to vast Cloud Copy).
-#   ansible-playbook playbooks/cloud-rclone.yml -e rclone_direction=push -e rclone_remote=gdrive:faceswap-model
-#   ansible-playbook playbooks/cloud-rclone.yml -e rclone_direction=pull -e rclone_remote=gdrive:faceswap-model
+# rclone push/pull the model dir <-> Google Drive (service account auth).
+# Prereq: GDRIVE_SA_JSON set as a Vast.ai instance environment variable.
+#   ansible-playbook playbooks/cloud-rclone.yml -e rclone_direction=push
+#   ansible-playbook playbooks/cloud-rclone.yml -e rclone_direction=pull
 - name: Faceswap rclone sync
   hosts: cloud
   gather_facts: false
