@@ -5,7 +5,7 @@
 - name: Require gdrive_sa_json
   ansible.builtin.assert:
     that: gdrive_sa_json | length > 0
-    fail_msg: "Run playbooks/provision-gdrive-sa-key.yml to populate google-account-vault.yml first."
+    fail_msg: "Run playbooks/vault-store-gdrive-sa-key.yml to populate google-account-vault.yml first."
 
 - name: Ensure gdrive credentials dir
   ansible.builtin.file:
