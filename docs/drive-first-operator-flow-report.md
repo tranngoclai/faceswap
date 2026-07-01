@@ -106,8 +106,8 @@ Avoid `gdrive:train/faceswap/<workspace-name>` in automation unless `gdrive_root
 - `scripts/cloud/serverless_extract.py` currently uses `rclone copy` with R2 remote.
 - `docker/serverless/Dockerfile` packages the RunPod worker and rclone.
 - `ansible/playbooks/cloud-serverless-deploy.yml` only health-checks RunPod endpoint; it does not deploy endpoint config.
-- `ansible/playbooks/cloud-serverless-extract.yml` submits RunPod extract job using R2 paths.
-- `ansible/playbooks/provision-gdrive-sa-key.yml` encrypts Google service account JSON into `google-account-vault.yml`.
+- `ansible/playbooks/runpod-extract-faces.yml` submits RunPod extract job using R2 paths.
+- `ansible/playbooks/vault-store-gdrive-sa-key.yml` encrypts Google service account JSON into `google-account-vault.yml`.
 - `ansible/roles/faceswap_cloudsync` already configures rclone Google Drive remote on VastAI from Vault.
 - `ansible/playbooks/provision-vast-instance.yml` provisions VastAI and patches `~/.ssh/config`.
 - `ansible/roles/faceswap_train` starts training in tmux and expects local VastAI folders to exist.
@@ -122,7 +122,7 @@ Practical secure baseline:
 - Use admin/primary VastAI key only for local provisioning/key-minting.
 - Use scoped VastAI runtime key for cloud-copy or runtime tasks where possible.
 - Put Google service account file on cloud runtime only during setup/use, mode `0600`.
-- RunPod API key stored in `ansible/group_vars/vault.yml` (encrypted), managed via `provision-runpod-key.yml` playbook; keep separate from app/endpoint secrets.
+- RunPod API key stored in `ansible/group_vars/vault.yml` (encrypted), managed via `vault-store-runpod-key.yml` playbook; keep separate from app/endpoint secrets.
 - Use one env only, but keep names explicit to avoid accidental cross-run overwrite.
 
 Known risks to address:
@@ -148,7 +148,7 @@ Known risks to address:
 5. Add playbook to sync Drive train input folders to VastAI training dirs.
 6. Add preflight train validation: train input A/B exists, face count sufficient, images readable, Drive read/write works, disk OK, GPU OK, no conflicting training session.
 7. Update `docs/cloud-training-vast.md` and `ansible/README.md` to make Drive-first flow canonical.
-8. **✓ RESOLVED:** VastAI provisioning now via Terraform (terraform-gpu.yml) with proper key semantics; `cc_instance_id`/`rp_pod_id` auto-managed and stored in cloud.yml.
+8. **✓ RESOLVED:** VastAI provisioning now via Terraform (cloud-provision-instance.yml) with proper key semantics; `cc_instance_id`/`rp_pod_id` auto-managed and stored in cloud.yml.
 9. Make all RunPod submit callers poll `/status/{job_id}` to terminal state when `/runsync` returns `IN_PROGRESS`.
 10. Define `manifest.json` enough to record workspace name, root folder ID, folder IDs, source files, extract outputs, and schema version.
 
@@ -180,7 +180,7 @@ This report recommends that `gdrive_root_folder_id` points directly at the share
 ## Operator Runbook
 
 1. Encrypt or rotate Google service account key:
-   `ansible-playbook playbooks/provision-gdrive-sa-key.yml -e gdrive_sa_key_file=/path/to/service-account.json`
+   `ansible-playbook playbooks/vault-store-gdrive-sa-key.yml -e gdrive_sa_key_file=/path/to/service-account.json`
 
 2. Create or choose the Google Drive root folder and share it with the service account email. Record its folder ID in Ansible vars.
 
@@ -198,20 +198,20 @@ This report recommends that `gdrive_root_folder_id` points directly at the share
    `train/faceswap/<workspace-name>/train/input_A/` and `train/faceswap/<workspace-name>/train/input_B/`
 
 8. Provision and setup VastAI (via Terraform):
-   `ansible-playbook playbooks/terraform-gpu.yml`
-   `ansible-playbook playbooks/cloud-setup.yml`
+   `ansible-playbook playbooks/cloud-provision-instance.yml`
+   `ansible-playbook playbooks/cloud-install-faceswap.yml`
 
 9. Sync Drive train input folders to VastAI training dirs:
-   `ansible-playbook playbooks/cloud-sync-train-inputs.yml -e fs_workspace_name=<workspace-name>`
+   `ansible-playbook playbooks/cloud-pull-train-faces.yml -e fs_workspace_name=<workspace-name>`
 
 10. Run train preflight:
-    `ansible-playbook playbooks/cloud-train-preflight.yml -e fs_workspace_name=<workspace-name>`
+    `ansible-playbook playbooks/cloud-preflight.yml -e fs_workspace_name=<workspace-name>`
 
 11. Start training:
-    `ansible-playbook playbooks/cloud-train.yml -e fs_workspace_name=<workspace-name>`
+    `ansible-playbook playbooks/cloud-start-training.yml -e fs_workspace_name=<workspace-name>`
 
 12. Sync model artifacts back to Google Drive:
-     `ansible-playbook playbooks/cloud-cloudsync.yml -e fs_workspace_name=<workspace-name>`
+     `ansible-playbook playbooks/cloud-install-sync-cron.yml -e fs_workspace_name=<workspace-name>`
 
 13. Stop or destroy VastAI instance when done.
 

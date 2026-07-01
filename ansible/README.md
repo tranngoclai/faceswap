@@ -26,11 +26,11 @@ Encrypted in `group_vars/vault.yml` (AES256). Edit with `ansible-vault edit grou
 
 | Variable | Description |
 |---|---|
-| `vast_admin_key` | Vast.ai admin/primary API key — used by `terraform-gpu.yml` (create instances) |
+| `vast_admin_key` | Vast.ai admin/primary API key — used by `cloud-provision-instance.yml` (create instances) |
 | `runpod_api_key` | RunPod API key for submitting serverless jobs |
 
 Google Drive service account JSON is stored separately in `group_vars/google-account-vault.yml`
-(also AES256-encrypted). Manage with `ansible-playbook playbooks/provision-gdrive-sa-key.yml`.
+(also AES256-encrypted). Manage with `ansible-playbook playbooks/vault-store-gdrive-sa-key.yml`.
 
 | Variable | Description |
 |---|---|
@@ -47,7 +47,7 @@ Google Drive service account JSON is stored separately in `group_vars/google-acc
 | `gdrive_train_model` | Drive destination for model artifacts (derived from workspace + train/model) |
 | `cc_sync_src` | Local VastAI dir to push (default: `fs_train_model_dir` = `/workspace/train/model`) |
 | `cc_sync_dst` | Drive destination for sync (derived: `gdrive_train_model`) |
-| `cc_instance_id` | Updated automatically by `terraform-gpu.yml` — do not edit manually |
+| `cc_instance_id` | Updated automatically by `cloud-provision-instance.yml` — do not edit manually |
 | `rp_endpoint_id` | RunPod endpoint ID (created once in RunPod console) |
 
 ## Cloud (vast.ai) — setup & train
@@ -55,12 +55,12 @@ Google Drive service account JSON is stored separately in `group_vars/google-acc
 | Task | Command |
 |------|---------|
 | Provision + setup instance | `ansible-playbook playbooks/cloud-provision-and-setup.yml` |
-| Install deps + GPU check only | `ansible-playbook playbooks/cloud-setup.yml` |
-| Sync Drive train inputs → VastAI | `ansible-playbook playbooks/cloud-sync-train-inputs.yml` |
-| Validate faces/disk/GPU before train | `ansible-playbook playbooks/cloud-train-preflight.yml` |
-| Start training (tmux) | `ansible-playbook playbooks/cloud-train.yml` |
-| TensorBoard (tmux, port 6006) | `ansible-playbook playbooks/cloud-board.yml` |
-| Auto cloud-sync cron → Drive | `ansible-playbook playbooks/cloud-cloudsync.yml` |
+| Install deps + GPU check only | `ansible-playbook playbooks/cloud-install-faceswap.yml` |
+| Sync Drive train inputs → VastAI | `ansible-playbook playbooks/cloud-pull-train-faces.yml` |
+| Validate faces/disk/GPU before train | `ansible-playbook playbooks/cloud-preflight.yml` |
+| Start training (tmux) | `ansible-playbook playbooks/cloud-start-training.yml` |
+| TensorBoard (tmux, port 6006) | `ansible-playbook playbooks/cloud-start-tensorboard.yml` |
+| Auto cloud-sync cron → Drive | `ansible-playbook playbooks/cloud-install-sync-cron.yml` |
 | rclone push/pull model | `ansible-playbook playbooks/cloud-rclone.yml -e rclone_direction=push -e rclone_remote=gdrive:faceswap-model` |
 
 Training params: `-e fs_trainer=original -e fs_batch_size=16` (see `group_vars/cloud.yml`).
@@ -69,10 +69,10 @@ Training params: `-e fs_trainer=original -e fs_batch_size=16` (see `group_vars/c
 
 ```bash
 # Provision VastAI instance via Terraform (writes cc_instance_id back to cloud.yml)
-ansible-playbook playbooks/terraform-gpu.yml
+ansible-playbook playbooks/cloud-provision-instance.yml
 
 # Destroy instance
-ansible-playbook playbooks/terraform-gpu.yml -e destroy=true
+ansible-playbook playbooks/cloud-provision-instance.yml -e destroy=true
 ```
 
 ## RunPod Serverless extract
@@ -80,7 +80,7 @@ ansible-playbook playbooks/terraform-gpu.yml -e destroy=true
 | Task | Command |
 |------|---------|
 | Health-check endpoint | `ansible-playbook playbooks/cloud-serverless-deploy.yml` |
-| Submit extract job (Drive source → Drive extract) | `ansible-playbook playbooks/cloud-serverless-extract.yml -e sl_input=alice.mp4 -e sl_side=A` |
+| Submit extract job (Drive source → Drive extract) | `ansible-playbook playbooks/runpod-extract-faces.yml -e sl_input=alice.mp4 -e sl_side=A` |
 
 Endpoint secrets set in RunPod console (not stored here):
 `GDRIVE_SA_JSON_B64`, `GDRIVE_ROOT_FOLDER_ID`.
@@ -89,10 +89,10 @@ Endpoint secrets set in RunPod console (not stored here):
 
 ```bash
 # Encrypt and store new SA key (prompts for JSON path)
-ansible-playbook playbooks/provision-gdrive-sa-key.yml
+ansible-playbook playbooks/vault-store-gdrive-sa-key.yml
 
 # Install on-instance rclone + cron (syncs model back to Drive every 10 min)
-ansible-playbook playbooks/cloud-cloudsync.yml
+ansible-playbook playbooks/cloud-install-sync-cron.yml
 
 # Provision cloudsync key permissions
 ansible-playbook playbooks/provision-cloudsync-key.yml
@@ -114,16 +114,17 @@ Apple Silicon / Linux with native torch: add `-e fs_local_backend=native`
 ## End-to-end (Drive-first flow)
 
 ```
-provision-gdrive-sa-key → (set RunPod endpoint secrets) →
-  cloud-serverless-extract (A + B) → curate in Drive →
-  terraform-gpu → cloud-setup →
-  cloud-sync-train-inputs → cloud-train-preflight →
-  cloud-train → cloud-cloudsync (cron) → (done, terraform-gpu -e destroy=true)
+vault-store-gdrive-sa-key → (set RunPod endpoint secrets) →
+  runpod-extract-faces (A + B) → curate in Drive →
+  cloud-provision-instance → cloud-install-faceswap →
+  cloud-pull-train-faces → cloud-preflight →
+  cloud-start-training → cloud-install-sync-cron (cron) →
+  (done, cloud-provision-instance -e destroy=true)
 ```
 
 ## Removed
 
-- `provision-vast-instance.yml` — replaced by `terraform-gpu.yml`.
+- `provision-vast-instance.yml` — replaced by `cloud-provision-instance.yml`.
 - `provision-key.yml` + `vast_cloudcopy_key` role — vastai cloud copy replaced by rclone + gdrive.
 - `vast_deploy_key` role — replaced by gdrive service account auth.
 - `vast_api_key` vault variable — renamed to `vast_admin_key`.

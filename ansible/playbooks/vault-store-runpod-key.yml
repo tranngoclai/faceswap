@@ -15,7 +15,7 @@
         fail_msg: "Pass the key with: -e runpod_api_key=rp_xxxxxxxxxxxxxxxx"
 
 - name: Upsert into vault
-  ansible.builtin.import_playbook: provision-vault-key.yml
+  ansible.builtin.import_playbook: vault-store-key.yml
   vars:
     vault_key: runpod_api_key
     vault_value: "{{ runpod_api_key }}"

@@ -8,16 +8,16 @@ Train faceswap trên GPU thuê tại [vast.ai](https://cloud.vast.ai).
 
 | Việc | Lệnh Ansible (chạy trong `ansible/`) |
 |------|--------------------------------------|
-| Cloud: provision VastAI/RunPod | `ansible-playbook playbooks/terraform-gpu.yml` (default: VastAI) or `-e enable_runpod=true -e enable_vast=false` |
-| Cloud: install + GPU check | `ansible-playbook playbooks/cloud-setup.yml` |
-| Cloud: train (tmux) | `ansible-playbook playbooks/cloud-train.yml` |
-| Cloud: TensorBoard | `ansible-playbook playbooks/cloud-board.yml` |
-| Cloud: auto cloud-sync cron | `ansible-playbook playbooks/cloud-cloudsync.yml` |
+| Cloud: provision VastAI/RunPod | `ansible-playbook playbooks/cloud-provision-instance.yml` (default: VastAI) or `-e enable_runpod=true -e enable_vast=false` |
+| Cloud: install + GPU check | `ansible-playbook playbooks/cloud-install-faceswap.yml` |
+| Cloud: train (tmux) | `ansible-playbook playbooks/cloud-start-training.yml` |
+| Cloud: TensorBoard | `ansible-playbook playbooks/cloud-start-tensorboard.yml` |
+| Cloud: auto cloud-sync cron | `ansible-playbook playbooks/cloud-install-sync-cron.yml` |
 | Cloud: rclone push/pull | `ansible-playbook playbooks/cloud-rclone.yml -e rclone_direction=push -e rclone_remote=…` |
 | RunPod: serverless health-check | `ansible-playbook playbooks/cloud-serverless-deploy.yml` |
-| RunPod: serverless extract | `ansible-playbook playbooks/cloud-serverless-extract.yml -e sl_input=alice.mp4 -e sl_side=A` |
-| RunPod: provision API key | `ansible-playbook playbooks/provision-runpod-key.yml -e runpod_api_key=rp_xxx` |
-| Inject vault key | `ansible-playbook playbooks/provision-vault-key.yml -e vault_key=x -e vault_value=y` |
+| RunPod: serverless extract | `ansible-playbook playbooks/runpod-extract-faces.yml -e sl_input=alice.mp4 -e sl_side=A` |
+| RunPod: provision API key | `ansible-playbook playbooks/vault-store-runpod-key.yml -e runpod_api_key=rp_xxx` |
+| Inject vault key | `ansible-playbook playbooks/vault-store-key.yml -e vault_key=x -e vault_value=y` |
 | Local: build CPU image | `ansible-playbook playbooks/local-build.yml` |
 | Local: extract→dedupe→sharp | `ansible-playbook playbooks/local-extract.yml -e fs_input=alice.mp4 -e fs_ws=alice` |
 | Local: dedupe / sharp riêng | `ansible-playbook playbooks/local-dedupe.yml` · `local-sharp.yml` |
@@ -44,7 +44,7 @@ cd ansible
 ansible-galaxy collection install -r requirements.yml          # 1 lần duy nhất
 
 # 1. Mã hoá / rotate SA key → Ansible Vault
-ansible-playbook playbooks/provision-gdrive-sa-key.yml
+ansible-playbook playbooks/vault-store-gdrive-sa-key.yml
 
 # 2. Chia sẻ Drive root folder cho SA email (xem output bước 1 để lấy email)
 #    Ghi folder ID vào group_vars/cloud.yml: gdrive_root_folder_id
@@ -52,35 +52,35 @@ ansible-playbook playbooks/provision-gdrive-sa-key.yml
 # 3. Cấu hình rclone gdrive local (SA key lấy từ vault — dùng bước 12 bên dưới)
 
 # 4. Đặt endpoint secrets trong RunPod console:
-#    GDRIVE_SA_JSON_B64   — SA JSON base64 (xem provision-gdrive-sa-key.yml output)
+#    GDRIVE_SA_JSON_B64   — SA JSON base64 (xem vault-store-gdrive-sa-key.yml output)
 #    GDRIVE_ROOT_FOLDER_ID — folder ID từ bước 2
 
 # 5. Upload video nguồn qua App → Drive <workspace>/source/A|B/
 #    (App tự đặt fs_workspace_name và side; ghi fs_workspace_name vào cloud.yml)
 
 # 6. RunPod extract A + B (đợi tới khi job terminal)
-ansible-playbook playbooks/cloud-serverless-extract.yml -e sl_input=alice.mp4 -e sl_side=A
-ansible-playbook playbooks/cloud-serverless-extract.yml -e sl_input=bob.mp4   -e sl_side=B
+ansible-playbook playbooks/runpod-extract-faces.yml -e sl_input=alice.mp4 -e sl_side=A
+ansible-playbook playbooks/runpod-extract-faces.yml -e sl_input=bob.mp4   -e sl_side=B
 
 # 7. Duyệt mặt trong Drive extract/A|B/
 #    Copy approved faces → Drive train/input_A/ và train/input_B/
 
 # 8. Provision VastAI instance (Terraform) + setup
-ansible-playbook playbooks/terraform-gpu.yml
-ansible-playbook playbooks/cloud-setup.yml
+ansible-playbook playbooks/cloud-provision-instance.yml
+ansible-playbook playbooks/cloud-install-faceswap.yml
 
 # 9. Sync Drive inputs → VastAI /workspace/train/
-ansible-playbook playbooks/cloud-sync-train-inputs.yml
+ansible-playbook playbooks/cloud-pull-train-faces.yml
 
 # 10. Preflight: kiểm tra faces / disk / GPU trước khi train
-ansible-playbook playbooks/cloud-train-preflight.yml
+ansible-playbook playbooks/cloud-preflight.yml
 
 # 11. Train (tmux, chạy nền)
-ansible-playbook playbooks/cloud-train.yml -e fs_trainer=original -e fs_batch_size=16
-ansible-playbook playbooks/cloud-board.yml                              # TensorBoard port 6006 (tuỳ chọn)
+ansible-playbook playbooks/cloud-start-training.yml -e fs_trainer=original -e fs_batch_size=16
+ansible-playbook playbooks/cloud-start-tensorboard.yml                              # TensorBoard port 6006 (tuỳ chọn)
 
 # 12. Cài cron auto-sync model → Drive mỗi 10 phút
-ansible-playbook playbooks/cloud-cloudsync.yml
+ansible-playbook playbooks/cloud-install-sync-cron.yml
 #    -> /root/cloud-sync.sh; log: /root/cloud-sync.log
 
 # 13. Xong → stop/destroy instance; pull model để convert local
@@ -187,12 +187,12 @@ ansible-playbook playbooks/local-sharp.yml -e fs_faces_out=<dir> -e fs_blur_thre
 | 12.8 / 13.0 | `requirements/requirements_nvidia_13.txt` (cu130) |
 
 > Template **PyTorch sẵn** (`pytorch/pytorch:2.9-cuda12.8-cudnn9-runtime`)? Dùng `-e faceswap_skip_torch=true` giữ torch của image. CUDA ↔ requirements đặt ở `group_vars/cloud.yml` (`faceswap_req_file`).
-> **Jupyter** không bắt buộc (train qua CLI). **Không** train trong notebook cell (chết khi mất kết nối) — `cloud-train.yml` chạy trong `tmux`.
+> **Jupyter** không bắt buộc (train qua CLI). **Không** train trong notebook cell (chết khi mất kết nối) — `cloud-start-training.yml` chạy trong `tmux`.
 
 Lệnh train (xem block end-to-end mục trên). Tinh chỉnh:
 ```bash
-ansible-playbook playbooks/cloud-train.yml -e fs_trainer=villain -e fs_batch_size=8   # giảm batch nếu CUDA OOM
-ansible-playbook playbooks/cloud-board.yml                                            # TensorBoard 0.0.0.0:6006
+ansible-playbook playbooks/cloud-start-training.yml -e fs_trainer=villain -e fs_batch_size=8   # giảm batch nếu CUDA OOM
+ansible-playbook playbooks/cloud-start-tensorboard.yml                                            # TensorBoard 0.0.0.0:6006
 ```
 `faceswap_train` dùng sẵn flag headless `-w` (preview ra file), `-s` (save), `-I` (snapshot); idempotent (bỏ qua nếu tmux session đã có). Logs TensorBoard bật mặc định.
 
@@ -202,11 +202,11 @@ ansible-playbook playbooks/cloud-board.yml                                      
 
 ## 3. Auto-sync model lên Google Drive
 
-`cloud-cloudsync.yml` cài **rclone** lên instance, inject SA key từ vault, đặt **cron mỗi 10 phút** đẩy `/workspace/train/model` → Drive `<workspace>/train/model/`.
+`cloud-install-sync-cron.yml` cài **rclone** lên instance, inject SA key từ vault, đặt **cron mỗi 10 phút** đẩy `/workspace/train/model` → Drive `<workspace>/train/model/`.
 
 ```bash
 # Cài rclone + cron trên instance (chạy sau cloud-setup, bước 12 trong quy trình)
-ansible-playbook playbooks/cloud-cloudsync.yml
+ansible-playbook playbooks/cloud-install-sync-cron.yml
 #   -> /root/cloud-sync.sh; crontab */10; log: /root/cloud-sync.log
 ```
 
@@ -262,11 +262,11 @@ Extract faces theo **job, scale-to-zero** trên [RunPod Serverless](https://runp
 
 1. Tạo serverless endpoint trong **RunPod console** (image: `ghcr.io/tranngoclai/faceswap-sl:<tag>`) → ghi lại `RUNPOD_ENDPOINT_ID`.
 2. Đặt **endpoint secrets** (dùng cho worker xác thực vào Drive):
-   `GDRIVE_SA_JSON_B64` — service account JSON đã base64-encode (`ansible-playbook playbooks/provision-gdrive-sa-key.yml`).
+   `GDRIVE_SA_JSON_B64` — service account JSON đã base64-encode (`ansible-playbook playbooks/vault-store-gdrive-sa-key.yml`).
    `GDRIVE_ROOT_FOLDER_ID` — ID thư mục Drive gốc (share folder này cho SA email).
 3. Lưu `runpod_api_key` trong Ansible Vault (`ansible/group_vars/vault.yml`).
 4. Set `rp_endpoint_id` và `gdrive_root_folder_id` trong `ansible/group_vars/cloud.yml`.
-5. Cấu hình rclone gdrive local: `ansible-playbook playbooks/cloud-cloudsync.yml` (dùng SA key từ `google-account-vault.yml`).
+5. Cấu hình rclone gdrive local: `ansible-playbook playbooks/cloud-install-sync-cron.yml` (dùng SA key từ `google-account-vault.yml`).
 
 ### Chạy
 
@@ -275,7 +275,7 @@ cd ansible
 # Health-check endpoint
 ansible-playbook playbooks/cloud-serverless-deploy.yml
 # Submit job (worker: Drive source/A -> extract -> Drive extract/A)
-ansible-playbook playbooks/cloud-serverless-extract.yml \
+ansible-playbook playbooks/runpod-extract-faces.yml \
   -e sl_input=alice.mp4 -e sl_side=A
 ```
 
@@ -318,12 +318,12 @@ Tất cả qua Ansible trong `ansible/` (chi tiết: [`ansible/README.md`](../an
 ## Checklist
 
 - [ ] `cd ansible && ansible-galaxy collection install -r requirements.yml` (1 lần)
-- [ ] `provision-gdrive-sa-key.yml` → share Drive folder → ghi `gdrive_root_folder_id` vào `cloud.yml`
+- [ ] `vault-store-gdrive-sa-key.yml` → share Drive folder → ghi `gdrive_root_folder_id` vào `cloud.yml`
 - [ ] Đặt `GDRIVE_SA_JSON_B64` + `GDRIVE_ROOT_FOLDER_ID` trong RunPod endpoint secrets
 - [ ] Upload video nguồn qua App → Drive `source/A|B/`; ghi `fs_workspace_name` vào `cloud.yml`
-- [ ] `cloud-serverless-extract.yml` A + B → duyệt `extract/A|B/` → copy vào `train/input_A|B/`
-- [ ] `terraform-gpu.yml` → `cloud-setup.yml` → `cloud-sync-train-inputs.yml` (terraform manages cc_instance_id / rp_pod_id)
-- [ ] `cloud-train-preflight.yml` → `cloud-train.yml` → `cloud-cloudsync.yml` (cron)
+- [ ] `runpod-extract-faces.yml` A + B → duyệt `extract/A|B/` → copy vào `train/input_A|B/`
+- [ ] `cloud-provision-instance.yml` → `cloud-install-faceswap.yml` → `cloud-pull-train-faces.yml` (terraform manages cc_instance_id / rp_pod_id)
+- [ ] `cloud-preflight.yml` → `cloud-start-training.yml` → `cloud-install-sync-cron.yml` (cron)
 - [ ] Xong → destroy instance; `local-convert.yml` để ghép mặt
 
 ---
