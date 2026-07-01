@@ -1,41 +1,45 @@
 # ── VastAI outputs ────────────────────────────────────────────────────────────
+# These outputs are read by the Ansible playbook `cloud-provision-instance.yml`
+# and written to group_vars/cloud.yml so subsequent playbooks can reach the
+# instance without re-running Terraform.
+
 output "vast_instance_id" {
-  description = "VastAI contract ID (stored in cloud.yml as cc_instance_id)"
+  description = "VastAI contract/instance ID — written to cloud.yml as cc_instance_id"
   value       = var.enable_vast ? vastai_instance.training[0].id : null
 }
 
 output "vast_ssh_host" {
-  description = "VastAI SSH hostname"
+  description = "SSH hostname (SSH proxy address assigned by VastAI)"
   value       = var.enable_vast ? vastai_instance.training[0].ssh_host : null
 }
 
 output "vast_ssh_port" {
-  description = "VastAI SSH port"
+  description = "SSH port (unique per instance on the shared proxy)"
   value       = var.enable_vast ? vastai_instance.training[0].ssh_port : null
 }
 
+output "vast_machine_id" {
+  description = "Host machine ID — useful for the VastAI API (e.g. labeling, renting adjacent machines)"
+  value       = var.enable_vast ? vastai_instance.training[0].machine_id : null
+}
+
 output "vast_gpu_name" {
-  description = "GPU model name on the provisioned instance"
+  description = "GPU model name on the provisioned host (may differ from search filter if fallback was used)"
   value       = var.enable_vast ? vastai_instance.training[0].gpu_name : null
 }
 
 output "vast_cost_per_hour" {
-  description = "Hourly cost in USD"
+  description = "Actual hourly cost in USD billed for this instance"
   value       = var.enable_vast ? vastai_instance.training[0].cost_per_hour : null
 }
 
-# ── RunPod outputs ────────────────────────────────────────────────────────────
-output "runpod_pod_id" {
-  description = "RunPod pod ID"
-  value       = var.enable_runpod ? runpod_pod.training[0].id : null
+output "vast_geolocation" {
+  description = "Geographic location of the host machine (country/region reported by VastAI)"
+  value       = var.enable_vast ? vastai_instance.training[0].geolocation : null
 }
 
-output "runpod_public_ip" {
-  description = "RunPod pod public IP"
-  value       = var.enable_runpod ? runpod_pod.training[0].public_ip : null
-}
-
-output "runpod_cost_per_hr" {
-  description = "RunPod hourly cost in credits"
-  value       = var.enable_runpod ? runpod_pod.training[0].cost_per_hr : null
+# ── RunPod serverless endpoint outputs ────────────────────────────────────────
+output "runpod_endpoint_id" {
+  description = "RunPod serverless endpoint ID (set as rp_endpoint_id in ansible/group_vars/cloud.yml)"
+  value       = var.enable_runpod ? runpod_endpoint.extract[0].id : null
 }

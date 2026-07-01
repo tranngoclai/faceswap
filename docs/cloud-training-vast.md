@@ -16,8 +16,7 @@ Train faceswap trên GPU thuê tại [vast.ai](https://cloud.vast.ai).
 | Cloud: rclone push/pull | `ansible-playbook playbooks/cloud-rclone.yml -e rclone_direction=push -e rclone_remote=…` |
 | RunPod: serverless health-check | `ansible-playbook playbooks/cloud-serverless-deploy.yml` |
 | RunPod: serverless extract | `ansible-playbook playbooks/runpod-extract-faces.yml -e sl_input=alice.mp4 -e sl_side=A` |
-| RunPod: provision API key | `ansible-playbook playbooks/vault-store-runpod-key.yml -e runpod_api_key=rp_xxx` |
-| Inject vault key | `ansible-playbook playbooks/vault-store-key.yml -e vault_key=x -e vault_value=y` |
+| Add/edit vault secret | `ansible-playbook playbooks/vault-store-key.yml -e vault_key=x -e vault_value=y` |
 | Local: build CPU image | `ansible-playbook playbooks/local-build.yml` |
 | Local: extract→dedupe→sharp | `ansible-playbook playbooks/local-extract.yml -e fs_input=alice.mp4 -e fs_ws=alice` |
 | Local: dedupe / sharp riêng | `ansible-playbook playbooks/local-dedupe.yml` · `local-sharp.yml` |

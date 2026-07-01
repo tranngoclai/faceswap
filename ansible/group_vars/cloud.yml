@@ -51,9 +51,8 @@ cc_sync_src: "{{ fs_train_model_dir }}"
 cc_sync_dst: "{{ gdrive_train_model }}"
 cc_interval_min: 10
 
-# Instance IDs — updated by terraform-provision.yml / terraform-destroy.yml. Do not edit manually.
+# Instance IDs — updated by cloud-provision-instance.yml. Do not edit manually.
 cc_instance_id: ""   # VastAI contract ID
-rp_pod_id: ""        # RunPod pod ID
 
 # ---------------------------------------------------------------------------
 # RunPod Serverless extract endpoint (scripts/cloud/serverless_extract.py).
@@ -63,7 +62,12 @@ rp_pod_id: ""        # RunPod pod ID
 # ---------------------------------------------------------------------------
 # Absolute path (the `command` module does not expand ~); interpreter with `requests`.
 rp_python: "{{ lookup('env', 'HOME') }}/.local/pipx/venvs/runpod/bin/python3"
-rp_endpoint_id: "6kpdf1l7s6jq7t"              # RunPod endpoint ID
+rp_endpoint_id: "kft8ical0jzbvu"              # managed by cloud-provision-instance.yml — do not edit manually
+
+# RunPod serverless endpoint Terraform config (read by cloud-provision-instance.yml).
+rp_template_id: "c6qbhpmcx5"                # RunPod serverless worker template ID
+rp_workers_max: 1                            # max concurrent workers
+rp_idle_timeout: 10                          # seconds worker stays alive with no jobs
 
 # Serverless extract submit params (override with -e).
 sl_input: "alice.mp4"                         # filename inside gdrive_source_a or _b

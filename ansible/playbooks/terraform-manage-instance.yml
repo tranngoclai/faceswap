@@ -3,10 +3,11 @@
 # Terraform state is stored encrypted in Ansible Vault.
 #
 # Usage:
-#   ansible-playbook playbooks/terraform-gpu.yml                                    # provision VastAI (default)
-#   ansible-playbook playbooks/terraform-gpu.yml -e destroy=true                    # destroy
-#   ansible-playbook playbooks/terraform-gpu.yml -e enable_runpod=true -e enable_vast=false
-#   ansible-playbook playbooks/terraform-gpu.yml -e vast_gpu="RTX 3090" -e vast_max_price_per_hour=0.80
+#   ansible-playbook playbooks/terraform-manage-instance.yml                                    # provision VastAI (default)
+#   ansible-playbook playbooks/terraform-manage-instance.yml -e plan=true                       # dry-run plan only
+#   ansible-playbook playbooks/terraform-manage-instance.yml -e destroy=true                    # destroy
+#   ansible-playbook playbooks/terraform-manage-instance.yml -e enable_runpod=true -e enable_vast=false
+#   ansible-playbook playbooks/terraform-manage-instance.yml -e vast_gpu="RTX 3090" -e vast_max_price_per_hour=0.80
 #
 # After provision, run:
 #   ansible-playbook playbooks/cloud-setup.yml
@@ -15,6 +16,7 @@
   hosts: localhost
   gather_facts: false
   vars_files:
+    - ../group_vars/cloud.yml
     - ../group_vars/vault.yml
     - ../group_vars/terraform-state-vault.yml
   vars:
@@ -23,6 +25,7 @@
     vault_state_file: "{{ playbook_dir }}/../group_vars/terraform-state-vault.yml"
     vault_pass_file: "~/.config/ansible/vault-pass"
 
+    plan: false     # set -e plan=true for dry-run (no state changes)
     destroy: false  # set -e destroy=true to tear down
 
     # Provider toggles (override with -e)
@@ -32,15 +35,22 @@
     # VastAI knobs
     vast_gpu: "RTX 4090"
     vast_gpu_fallback: "RTX 3090"
+    vast_num_gpus: 1
     vast_disk_gb: 60
-    vast_image: "vastai/base-image"
+    vast_image: "vastai/pytorch"
+    vast_cuda_min: "12.8"
     vast_max_price_per_hour: 1.50
+    vast_offer_type: "on-demand"
+    vast_datacenter_only: false
     vast_ssh_alias: "vast-training"
 
-    # RunPod knobs
-    runpod_pod_name: "faceswap-training"
-    runpod_container_disk_gb: 60
-    runpod_cloud_type: "SECURE"
+    # RunPod serverless endpoint knobs (sourced from group_vars/cloud.yml)
+    rp_template_id: "{{ rp_template_id }}"
+    rp_workers_max: "{{ rp_workers_max }}"
+    rp_idle_timeout: "{{ rp_idle_timeout }}"
+    rp_execution_timeout_ms: 200000
+    rp_scaler_type: "QUEUE_DELAY"
+    rp_scaler_value: 4
 
   tasks:
     # ── Restore state from vault ───────────────────────────────────────────────
@@ -58,6 +68,49 @@
         - destroy | bool
         - tf_state_b64 | default('') | length == 0
 
+    # ── Terraform vars (shared between plan and apply/destroy) ───────────────
+    - name: Set shared Terraform env vars
+      ansible.builtin.set_fact:
+        tf_env:
+          TF_VAR_vast_api_key: "{{ vast_admin_key }}"
+          TF_VAR_runpod_api_key: "{{ runpod_api_key | default('') }}"
+          TF_VAR_enable_vast: "{{ enable_vast | bool | string | lower }}"
+          TF_VAR_enable_runpod: "{{ enable_runpod | bool | string | lower }}"
+          TF_VAR_vast_gpu: "{{ vast_gpu }}"
+          TF_VAR_vast_gpu_fallback: "{{ vast_gpu_fallback }}"
+          TF_VAR_vast_num_gpus: "{{ vast_num_gpus }}"
+          TF_VAR_vast_disk_gb: "{{ vast_disk_gb }}"
+          TF_VAR_vast_image: "{{ vast_image }}"
+          TF_VAR_vast_cuda_min: "{{ vast_cuda_min }}"
+          TF_VAR_vast_max_price_per_hour: "{{ vast_max_price_per_hour }}"
+          TF_VAR_vast_offer_type: "{{ vast_offer_type }}"
+          TF_VAR_vast_datacenter_only: "{{ vast_datacenter_only | bool | string | lower }}"
+          TF_VAR_rp_template_id: "{{ rp_template_id }}"
+          TF_VAR_rp_workers_max: "{{ rp_workers_max }}"
+          TF_VAR_rp_idle_timeout: "{{ rp_idle_timeout }}"
+          TF_VAR_rp_execution_timeout_ms: "{{ rp_execution_timeout_ms }}"
+          TF_VAR_rp_scaler_type: "{{ rp_scaler_type }}"
+          TF_VAR_rp_scaler_value: "{{ rp_scaler_value }}"
+
+    # ── Terraform plan (dry-run, no state changes) ────────────────────────────
+    - name: Terraform plan
+      ansible.builtin.command:
+        argv: [terraform, plan]
+        chdir: "{{ tf_dir }}"
+      environment: "{{ tf_env }}"
+      register: tf_plan_out
+      changed_when: false
+      when: plan | bool
+
+    - name: Show plan output
+      ansible.builtin.debug:
+        msg: "{{ tf_plan_out.stdout_lines }}"
+      when: plan | bool
+
+    - name: Plan complete — no state changes made
+      ansible.builtin.meta: end_play
+      when: plan | bool
+
     # ── Terraform apply / destroy ──────────────────────────────────────────────
     - name: "Terraform {{ destroy | bool | ternary('destroy', 'apply') }}"
       community.general.terraform:
@@ -65,18 +118,25 @@
         state: "{{ destroy | bool | ternary('absent', 'present') }}"
         force_init: true
         variables:
-          vast_api_key: "{{ vast_admin_key }}"
+          vast_api_key: "{{ vast_admin_key if vast_admin_key | default('') else 'placeholder' }}"
           runpod_api_key: "{{ runpod_api_key | default('') }}"
           enable_vast: "{{ enable_vast | bool }}"
           enable_runpod: "{{ enable_runpod | bool }}"
           vast_gpu: "{{ vast_gpu }}"
           vast_gpu_fallback: "{{ vast_gpu_fallback }}"
+          vast_num_gpus: "{{ vast_num_gpus }}"
           vast_disk_gb: "{{ vast_disk_gb }}"
-          vast_max_price_per_hour: "{{ vast_max_price_per_hour }}"
           vast_image: "{{ vast_image }}"
-          runpod_pod_name: "{{ runpod_pod_name }}"
-          runpod_container_disk_gb: "{{ runpod_container_disk_gb }}"
-          runpod_cloud_type: "{{ runpod_cloud_type }}"
+          vast_cuda_min: "{{ vast_cuda_min }}"
+          vast_max_price_per_hour: "{{ vast_max_price_per_hour }}"
+          vast_offer_type: "{{ vast_offer_type }}"
+          vast_datacenter_only: "{{ vast_datacenter_only | bool }}"
+          rp_template_id: "{{ rp_template_id }}"
+          rp_workers_max: "{{ rp_workers_max }}"
+          rp_idle_timeout: "{{ rp_idle_timeout }}"
+          rp_execution_timeout_ms: "{{ rp_execution_timeout_ms }}"
+          rp_scaler_type: "{{ rp_scaler_type }}"
+          rp_scaler_value: "{{ rp_scaler_value }}"
       register: tf_result
 
     # ── Persist state to vault ─────────────────────────────────────────────────
@@ -90,7 +150,7 @@
       ansible.builtin.copy:
         content: |
           ---
-          # Managed by terraform-gpu.yml — do not edit tf_state_b64 by hand.
+          # Managed by terraform-manage-instance.yml — do not edit tf_state_b64 by hand.
           tf_state_b64: "{{ tf_state_raw.content }}"
         dest: "{{ vault_state_file }}"
         mode: "0600"
@@ -100,7 +160,7 @@
       ansible.builtin.copy:
         content: |
           ---
-          # Managed by terraform-gpu.yml — state cleared after destroy.
+          # Managed by terraform-manage-instance.yml — state cleared after destroy.
           tf_state_b64: ""
         dest: "{{ vault_state_file }}"
         mode: "0600"
@@ -137,12 +197,12 @@
           cc_instance_id: "{{ (not destroy | bool) | ternary(tf_out.vast_instance_id.value | default(''), '') }}"
       when: enable_vast | bool
 
-    - name: Update rp_pod_id in cloud.yml
+    - name: Update rp_endpoint_id in cloud.yml
       ansible.builtin.replace:
         path: "{{ playbook_dir }}/../group_vars/cloud.yml"
-        regexp: '^rp_pod_id:.*$'
+        regexp: '^rp_endpoint_id:.*$'
         replace: >-
-          rp_pod_id: "{{ (not destroy | bool) | ternary(tf_out.runpod_pod_id.value | default(''), '') }}"
+          rp_endpoint_id: "{{ (not destroy | bool) | ternary(tf_out.runpod_endpoint_id.value | default(''), '') }}"  # managed by cloud-provision-instance.yml — do not edit manually
       when: enable_runpod | bool
 
     # ── SSH config (VastAI provision only) ────────────────────────────────────
@@ -225,9 +285,8 @@
               '',
               'Next: ansible-playbook playbooks/cloud-setup.yml']
              if (not destroy | bool and enable_vast | bool) else []) +
-            (['RunPod pod ' + (tf_out.runpod_pod_id.value | default('?')) + ' READY',
-              'IP:   ' + (tf_out.runpod_public_ip.value | default('(no public IP)')),
-              'Cost: ' + (tf_out.runpod_cost_per_hr.value | default('?') | string) + ' credits/hr']
+            (['RunPod serverless endpoint ' + (tf_out.runpod_endpoint_id.value | default('?')) + ' READY',
+              'Submit jobs: ansible-playbook playbooks/runpod-extract-faces.yml']
              if (not destroy | bool and enable_runpod | bool) else []) +
             (['All resources destroyed. State cleared from vault.']
              if destroy | bool else []) +

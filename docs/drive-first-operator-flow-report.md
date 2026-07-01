@@ -122,7 +122,7 @@ Practical secure baseline:
 - Use admin/primary VastAI key only for local provisioning/key-minting.
 - Use scoped VastAI runtime key for cloud-copy or runtime tasks where possible.
 - Put Google service account file on cloud runtime only during setup/use, mode `0600`.
-- RunPod API key stored in `ansible/group_vars/vault.yml` (encrypted), managed via `vault-store-runpod-key.yml` playbook; keep separate from app/endpoint secrets.
+- RunPod API key stored in `ansible/group_vars/vault.yml` (encrypted), managed via `vault-store-key.yml` playbook; keep separate from app/endpoint secrets.
 - Use one env only, but keep names explicit to avoid accidental cross-run overwrite.
 
 Known risks to address:
