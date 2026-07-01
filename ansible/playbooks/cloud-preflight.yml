@@ -1,0 +1,11 @@
+---
+# Pre-training preflight checks on the VastAI instance.
+# Run before cloud-start-training.yml to catch missing inputs early.
+#
+# Usage:
+#   ansible-playbook playbooks/cloud-preflight.yml -e fs_workspace_name=alice-bob-001
+- name: Faceswap training preflight
+  hosts: cloud
+  gather_facts: false
+  roles:
+    - faceswap_preflight

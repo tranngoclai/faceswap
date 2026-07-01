@@ -20,6 +20,7 @@ on:
       - "requirements/_requirements_base.txt"
       - "requirements/requirements_nvidia_12.txt"
       - "scripts/cloud/dedupe_faces.py"
+      - "scripts/cloud/serverless_extract.py"
   workflow_dispatch:
     inputs:
       image_version:

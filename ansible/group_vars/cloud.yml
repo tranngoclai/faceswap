@@ -9,13 +9,6 @@ faceswap_pip: "/venv/main/bin/pip"
 faceswap_req_file: "requirements/requirements_nvidia_13.txt"
 faceswap_skip_torch: false                   # true = install base deps only (keep image torch)
 
-# Key hierarchy (stored at ~/.config/vastai/, env var overrides file):
-#   vast_api_key      → faceswap-cloudsync  (instance_read+write) → cloud sync cron on GPU instance
-# Serverless extract now runs on RunPod (see RUNPOD_API_KEY below), not Vast.
-vast_api_key: >-
-  {{ lookup('env', 'VAST_API_KEY')
-     or lookup('file', '~/.config/vastai/vast_cloudsync_key', errors='ignore') | default('') }}
-
 # Training data (absolute paths under /workspace, persisted on the instance).
 fs_faces_a: "/workspace/train/input_aligned"
 fs_faces_b: "/workspace/train/output/faces_full"
@@ -35,15 +28,10 @@ fs_tb_port: 6006
 fs_train_session: "fs"
 fs_board_session: "tb"
 
-# vast.ai Cloud Copy auto-sync (instance -> Drive connection).
-cc_instance_id: "43192617"
-cc_connection_id: "42775"                     # from: vastai show connections
+# R2 model sync cron (instance -> R2). Credentials in vault.yml.
+# Syncs cc_sync_src -> r2:<r2_bucket>/<fs_workspace_name>/train every cc_interval_min min.
 cc_sync_src: "/workspace/train"
-cc_dst: "/faceswap-train"
 cc_interval_min: 10
-
-# rclone remote (alternative to vast Cloud Copy). e.g. "gdrive:faceswap-model"
-rclone_remote: ""
 
 # ---------------------------------------------------------------------------
 # RunPod Serverless extract endpoint (scripts/cloud/serverless_extract.py).
@@ -55,10 +43,19 @@ rclone_remote: ""
 rp_python: "{{ lookup('env', 'HOME') }}/.local/pipx/venvs/runpod/bin/python3"
 rp_endpoint_id: "6kpdf1l7s6jq7t"              # RunPod endpoint ID
 
-# Cloudflare R2 storage. Credentials (RCLONE_CONFIG_R2_*) are RunPod endpoint
-# secrets set in the RunPod console — never stored here.
-# r2_bucket is passed to the submit script so the client knows which bucket.
+# Cloudflare R2. r2_bucket is the bucket name. r2_endpoint and credentials
+# (r2_access_key_id, r2_secret_access_key) live in ansible/group_vars/vault.yml.
+# TF_VAR_* equivalents (rp_r2_*) are set from the same vault at terraform apply time.
 r2_bucket: "faceswap-storage"
+# r2_access_key_id, r2_secret_access_key, r2_endpoint — defined in vault.yml
+
+# Workspace name — identifies the training session; all R2 paths are namespaced under it.
+# Pass at run time: -e fs_workspace_name=alice-bob-001
+fs_workspace_name: ""
+
+# R2 paths for face pull (cloud-pull-train-faces.yml). Source = RunPod extract output.
+r2_faces_a_src: "{{ fs_workspace_name }}/extract/A"
+r2_faces_b_src: "{{ fs_workspace_name }}/extract/B"
 
 # Submit-job params (override with -e).
 sl_input: "alice.mp4"                         # media filename inside sl_r2_src

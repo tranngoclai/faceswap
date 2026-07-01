@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Managed by Ansible (roles/faceswap_cloudsync). Do not edit by hand.
-# vastai is pre-installed by vast at /opt/instance-tools/bin; set a full PATH so
-# cron (minimal env) finds it. Auth comes from VAST_API_KEY (crontab env line).
-export PATH=/opt/instance-tools/bin:/venv/main/bin:/usr/local/bin:/usr/bin:/bin
+# RCLONE_CONFIG_R2_* env vars are injected via crontab environment lines.
+export PATH=/venv/main/bin:/usr/local/bin:/usr/bin:/bin
 ts="$(date '+%F %T')"
-out="$(vastai cloud copy --src {{ cc_sync_src }} --dst {{ cc_dst }} --instance {{ cc_instance_id }} --connection {{ cc_connection_id }} --transfer 'Instance To Cloud' 2>&1)"
+out="$(rclone copy {{ cc_sync_src }} r2:{{ r2_bucket }}/{{ fs_workspace_name }}/train -v 2>&1)"
 echo "[$ts] $out" >> /root/cloud-sync.log

@@ -1,0 +1,29 @@
+---
+# Generic: upsert a single key-value pair into group_vars/vault.yml (AES256 encrypted).
+# Run once or re-run to rotate.
+#
+# Usage:
+#   ansible-playbook playbooks/vault-store-key.yml \
+#     -e vault_key=my_key -e vault_value=my_value
+
+- name: Upsert key into vault.yml
+  hosts: localhost
+  gather_facts: false
+  vars:
+    vault_file: "{{ playbook_dir }}/../group_vars/vault.yml"
+
+  pre_tasks:
+    - name: Require vault_key and vault_value
+      ansible.builtin.assert:
+        that:
+          - vault_key | default('') | length > 0
+          - vault_value | default('') | length > 0
+        fail_msg: "Pass both: -e vault_key=<key> -e vault_value=<value>"
+
+  roles:
+    - vault_upsert
+
+  post_tasks:
+    - name: Done
+      ansible.builtin.debug:
+        msg: "{{ vault_key }} injected into vault.yml. Safe to commit."

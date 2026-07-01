@@ -1,24 +1,33 @@
 ---
-# Mirrors setup-vast.sh `sync` / `pull`: rclone copy between the model dir and a
-# remote (e.g. gdrive:faceswap-model). Direction via rclone_direction: push|pull.
-# (No first-class rclone module exists, so this uses the command module.)
+# rclone copy between a local dir and an R2 remote.
+# Direction via rclone_direction: push|pull.
+# rclone_local: local path; rclone_remote: R2 path, e.g. "r2:faceswap-storage/ws/train".
+# R2 credentials (r2_access_key_id, r2_secret_access_key, r2_endpoint) from vault.
 
-- name: Require an rclone remote
+- name: Require rclone remote and local
   ansible.builtin.assert:
-    that: rclone_remote | length > 0
-    fail_msg: "Set rclone_remote, e.g. -e rclone_remote=gdrive:faceswap-model"
+    that:
+      - rclone_remote | length > 0
+      - rclone_local | length > 0
+    fail_msg: "Set rclone_remote (R2 path) and rclone_local (local dir)."
 
-- name: Ensure model dir exists
+- name: Ensure local dir exists
   ansible.builtin.file:
-    path: "{{ fs_train_model_dir }}"
+    path: "{{ rclone_local }}"
     state: directory
     mode: "0755"
 
-- name: "rclone {{ rclone_direction }} model dir"
+- name: "rclone {{ rclone_direction }}"
   ansible.builtin.command:
     cmd: >-
-      rclone copy
-      {{ (rclone_direction == 'pull') | ternary(rclone_remote, fs_train_model_dir) }}
-      {{ (rclone_direction == 'pull') | ternary(fs_train_model_dir, rclone_remote) }}
+      rclone copy -v
+      {{ (rclone_direction == 'pull') | ternary(rclone_remote, rclone_local) }}
+      {{ (rclone_direction == 'pull') | ternary(rclone_local, rclone_remote) }}
+  environment:
+    RCLONE_CONFIG_R2_TYPE: "s3"
+    RCLONE_CONFIG_R2_PROVIDER: "Cloudflare"
+    RCLONE_CONFIG_R2_ACCESS_KEY_ID: "{{ r2_access_key_id }}"
+    RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: "{{ r2_secret_access_key }}"
+    RCLONE_CONFIG_R2_ENDPOINT: "{{ r2_endpoint }}"
   register: rclone_run
   changed_when: "'Transferred:' in rclone_run.stderr or rclone_run.rc == 0"

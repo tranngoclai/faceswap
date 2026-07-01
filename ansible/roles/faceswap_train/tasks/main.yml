@@ -18,7 +18,12 @@
     mode: "0755"
 
 - name: Check for an existing training session
-  ansible.builtin.command: "tmux has-session -t {{ fs_train_session }}"
+  ansible.builtin.command:
+    argv:
+      - tmux
+      - has-session
+      - -t
+      - "{{ fs_train_session }}"
   register: train_session
   changed_when: false
   failed_when: false

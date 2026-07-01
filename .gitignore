@@ -13,6 +13,7 @@
 !pyproject.toml
 !.gitignore
 !.travis.yml
+!Makefile
 !/faceswap.py
 !/setup.py
 !/tools.py
@@ -81,3 +82,27 @@
 !lib/gui/**/presets/train/model_phaze_a_lightweight_preset.json
 !lib/gui/**/presets/train/model_phaze_a_original_preset.json
 !lib/gui/**/presets/train/model_phaze_a_stojo_preset.json
+
+# App env
+app/.env
+
+# App
+!app/
+!app/main.py
+!app/manifest.py
+!app/rclone_runtime.py
+!app/.env.example
+!app/requirements.txt
+!app/Dockerfile
+
+# App env
+app/.env
+
+# Terraform
+!/terraform/
+!/terraform/*.tf
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+*.tfplan

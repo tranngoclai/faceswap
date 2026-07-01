@@ -1,0 +1,35 @@
+---
+# Pull extracted face sets from R2 onto the training instance before training.
+# RunPod serverless extract pushes faces to R2; this playbook pulls them down.
+#
+# Usage:
+#   ansible-playbook playbooks/cloud-pull-train-faces.yml -e fs_workspace_name=alice-bob-001
+- name: Pull training faces from R2
+  hosts: cloud
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/cloud.yml
+    - ../group_vars/vault.yml
+  pre_tasks:
+    - name: Require workspace name
+      ansible.builtin.assert:
+        that: fs_workspace_name | length > 0
+        fail_msg: "Pass -e fs_workspace_name=<workspace> to identify the R2 source paths."
+
+  tasks:
+    - name: Pull side A faces (R2 -> instance)
+      ansible.builtin.include_role:
+        name: faceswap_rclone
+      vars:
+        rclone_direction: pull
+        rclone_remote: "r2:{{ r2_bucket }}/{{ r2_faces_a_src }}"
+        rclone_local: "{{ fs_faces_a }}"
+
+    - name: Pull side B faces (R2 -> instance)
+      ansible.builtin.include_role:
+        name: faceswap_rclone
+      vars:
+        rclone_direction: pull
+        rclone_remote: "r2:{{ r2_bucket }}/{{ r2_faces_b_src }}"
+        rclone_local: "{{ fs_faces_b }}"

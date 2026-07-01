@@ -15,31 +15,69 @@ ansible-galaxy collection install -r requirements.yml   # one-time
 
 - `cloud` → the vast.ai GPU instance. `ansible_host=vast-training` is a
   `~/.ssh/config` Host alias (host/port/key live in ssh config).
-- `local` → this control machine (Docker extract/convert + key minting).
+- `local` → this control machine (Docker extract/convert).
 
 Config defaults live in `group_vars/` (`all.yml`, `cloud.yml`, `local.yml`).
 Override anything at run time with `-e key=value`.
+
+## Vault variables
+
+Encrypted in `group_vars/vault.yml` (AES256). Edit with `ansible-vault edit group_vars/vault.yml`.
+
+| Variable | Description |
+|---|---|
+| `vast_admin_key` | Vast.ai admin/primary API key — used by `cloud-provision-instance.yml` (create instances) |
+| `runpod_api_key` | RunPod API key for submitting serverless jobs |
+| `r2_access_key_id` | Cloudflare R2 access key — used by rclone on the training instance and control machine |
+| `r2_secret_access_key` | Cloudflare R2 secret key |
+| `r2_endpoint` | Cloudflare R2 endpoint URL (`https://<account>.r2.cloudflarestorage.com`) |
+
+> `vast_api_key` — **removed**. Previously used for vast Cloud Copy; renamed to `vast_admin_key`.
+
+## group_vars/cloud.yml — key variables
+
+| Variable | Description |
+|---|---|
+| `fs_workspace_name` | Training session name — namespaces all R2 paths (pass with `-e`) |
+| `cc_sync_src` | Local dir to push to R2 (default: `/workspace/train`) |
+| `cc_interval_min` | R2 sync interval in minutes (default: `10`) |
+| `r2_bucket` | Cloudflare R2 bucket (default: `faceswap-storage`) |
+| `r2_faces_a_src` | R2 path for side-A faces (default: `<workspace>/extract/A`) |
+| `r2_faces_b_src` | R2 path for side-B faces (default: `<workspace>/extract/B`) |
+| `rp_endpoint_id` | RunPod endpoint ID (created once in RunPod console) |
 
 ## Cloud (vast.ai) — setup & train
 
 | Task | Command |
 |------|---------|
-| Install (clone + deps + preview patch) + GPU check | `ansible-playbook playbooks/cloud-setup.yml` |
-| Start training (tmux) | `ansible-playbook playbooks/cloud-train.yml` |
-| TensorBoard (tmux, port 6006) | `ansible-playbook playbooks/cloud-board.yml` |
-| Auto cloud-sync cron → Drive | `VAST_API_KEY=<scoped> ansible-playbook playbooks/cloud-cloudsync.yml` |
-| rclone push/pull model | `ansible-playbook playbooks/cloud-rclone.yml -e rclone_direction=push -e rclone_remote=gdrive:faceswap-model` |
+| Provision + setup instance | `ansible-playbook playbooks/cloud-provision-and-setup.yml` |
+| Install deps + GPU check only | `ansible-playbook playbooks/cloud-install-faceswap.yml` |
+| Validate faces/disk/GPU before train | `ansible-playbook playbooks/cloud-preflight.yml` |
+| Start training (tmux) | `ansible-playbook playbooks/cloud-start-training.yml` |
+| TensorBoard (tmux, port 6006) | `ansible-playbook playbooks/cloud-start-tensorboard.yml` |
+| Pull extracted faces from R2 to instance | `ansible-playbook playbooks/cloud-pull-train-faces.yml -e fs_workspace_name=alice-bob-001` |
+| Auto R2 sync cron (rclone push model) | `ansible-playbook playbooks/cloud-install-sync-cron.yml -e fs_workspace_name=alice-bob-001` |
 
 Training params: `-e fs_trainer=original -e fs_batch_size=16` (see `group_vars/cloud.yml`).
 
-## Scoped vast API key (run before cloud-sync)
+## Vast.ai — instance management
 
 ```bash
-# Mint a minimal (cloud-copy only) key with your admin/primary key:
-VAST_ADMIN_KEY=<primary> ansible-playbook playbooks/provision-key.yml
-#   add -e set_account_env_var=true to also store it as a vast account env-var.
-# Use the printed key as VAST_API_KEY for cloud-cloudsync.yml.
+# Provision VastAI instance via Terraform (writes rp_endpoint_id back to cloud.yml)
+ansible-playbook playbooks/cloud-provision-instance.yml
+
+# Destroy instance
+ansible-playbook playbooks/cloud-provision-instance.yml -e destroy=true
 ```
+
+## RunPod Serverless extract
+
+| Task | Command |
+|------|---------|
+| Health-check endpoint | `ansible-playbook playbooks/cloud-serverless-deploy.yml` |
+| Submit extract job (R2 source → R2 extract) | `ansible-playbook playbooks/runpod-extract-faces.yml -e sl_input=alice.mp4 -e sl_side=A` |
+
+R2 credentials (`RCLONE_CONFIG_R2_*`, `R2_BUCKET`) are injected via Terraform as RunPod template env vars (see `terraform/runpod_template.tf`).
 
 ## Local — extract / convert (Docker, Intel-Mac)
 
@@ -54,9 +92,23 @@ VAST_ADMIN_KEY=<primary> ansible-playbook playbooks/provision-key.yml
 Apple Silicon / Linux with native torch: add `-e fs_local_backend=native`
 (skips Docker, runs `faceswap.py` directly).
 
-## End-to-end
+## End-to-end flow
 
 ```
-provision-key → cloud-setup → cloud-train → cloud-cloudsync   (cloud)
-local-build → local-extract → (curate) → local-convert        (local)
+(set R2 creds in vault.yml + terraform) →
+  runpod-extract-faces (A + B) → curate extracted faces in R2 →
+  cloud-provision-instance → cloud-install-faceswap →
+  cloud-pull-train-faces (R2 → instance) →
+  cloud-preflight → cloud-start-training →
+  cloud-install-sync-cron (cron: rclone push model → R2) →
+  (done, cloud-provision-instance -e destroy=true)
 ```
+
+## Removed
+
+- `provision-vast-instance.yml` — replaced by `cloud-provision-instance.yml`.
+- `provision-key.yml` + `vast_cloudcopy_key` role — vastai cloud copy replaced by rclone.
+- `vast_deploy_key` role — no longer needed.
+- `vast_api_key` vault variable — renamed to `vast_admin_key`.
+- `cloud-pull-train-faces.yml` — **re-added**; pulls faces from R2 (RunPod extract output) to the training instance.
+- `vault-store-runpod-gdrive-oauth.yml` — removed; RunPod worker uses Cloudflare R2, not GDrive.

@@ -1,0 +1,13 @@
+---
+# Install the on-instance cron that rclone-pushes training data to Cloudflare R2.
+# R2 credentials (r2_access_key_id, r2_secret_access_key, r2_endpoint) come from vault.
+#   ansible-playbook playbooks/cloud-install-sync-cron.yml -e fs_workspace_name=alice-bob-001
+- name: Faceswap R2 sync cron
+  hosts: cloud
+  gather_facts: false
+  vars_files:
+    - ../group_vars/cloud.yml
+    - ../group_vars/vault.yml
+
+  roles:
+    - faceswap_cloudsync
