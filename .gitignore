@@ -95,7 +95,9 @@ app/.env
 # App env
 app/.env
 
-# Terraform — local provider cache and state (state lives in Ansible Vault)
+# Terraform
+!/terraform/
+!/terraform/*.tf
 .terraform/
 .terraform.lock.hcl
 terraform.tfstate
