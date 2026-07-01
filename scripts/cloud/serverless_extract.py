@@ -48,6 +48,10 @@ FACESWAP_DIR = os.environ.get("FACESWAP_DIR", "/workspace/faceswap")
 WORK_ROOT = os.environ.get("WORK_ROOT", "/workspace/sl")
 DEDUPE_REMOTE = f"{WORK_ROOT}/dedupe_faces.py"
 
+# Subprocess timeout knobs — tune via env vars on the RunPod endpoint secret.
+RCLONE_TIMEOUT_S = int(os.environ.get("RCLONE_TIMEOUT_S", "600"))   # 10 min per transfer
+EXTRACT_TIMEOUT_S = int(os.environ.get("EXTRACT_TIMEOUT_S", "1800"))  # 30 min for GPU extract
+
 
 def _setup_gdrive() -> None:
     """Decode GDRIVE_SA_JSON_B64 to disk and configure rclone gdrive remote.
@@ -74,21 +78,35 @@ def _setup_gdrive() -> None:
     subprocess.run(args, check=True, capture_output=True)
 
 
-async def _run(cmd: str, stream: bool = False) -> str:
+async def _run(
+    cmd: str,
+    stream: bool = False,
+    timeout_s: int | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> str:
     """Run a shell command, raise with output on failure.
 
     stream=False (default): capture combined stdout/stderr and return it.
     stream=True: inherit the parent's stdout/stderr so long-running output (e.g.
     faceswap's per-frame progress, rclone --progress) shows live in the worker
     container log; returns "" since nothing is captured.
+    timeout_s: hard wall-clock limit in seconds; raises TimeoutError on breach.
+    extra_env: additional env vars merged on top of os.environ for the subprocess.
     """
     pipe = None if stream else asyncio.subprocess.PIPE
+    env = {**os.environ, **extra_env} if extra_env else None
     proc = await asyncio.create_subprocess_shell(
         cmd,
         stdout=pipe,
         stderr=None if stream else asyncio.subprocess.STDOUT,
+        env=env,
     )
-    out, _ = await proc.communicate()
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        raise TimeoutError(f"cmd timed out after {timeout_s}s: {cmd}")
     text = (out or b"").decode("utf-8", "replace")
     if proc.returncode != 0:
         raise RuntimeError(f"cmd failed ({proc.returncode}): {cmd}\n{text}")
@@ -100,7 +118,7 @@ async def _run(cmd: str, stream: bool = False) -> str:
 async def _gdrive_download(gdrive_src: str, local_dir: str) -> None:
     """rclone copy gdrive:<gdrive_src> <local_dir>"""
     remote = shlex.quote(f"{GDRIVE_REMOTE}:{gdrive_src}")
-    out = await _run(f"rclone copy {remote} {shlex.quote(local_dir)} -v")
+    out = await _run(f"rclone copy {remote} {shlex.quote(local_dir)} -v", timeout_s=RCLONE_TIMEOUT_S)
     if out:
         print(f"[rclone download] {out}", flush=True)
 
@@ -108,7 +126,7 @@ async def _gdrive_download(gdrive_src: str, local_dir: str) -> None:
 async def _gdrive_upload(local_dir: str, gdrive_dst: str) -> None:
     """rclone copy <local_dir> gdrive:<gdrive_dst>"""
     remote = shlex.quote(f"{GDRIVE_REMOTE}:{gdrive_dst}")
-    out = await _run(f"rclone copy {shlex.quote(local_dir)} {remote} -v")
+    out = await _run(f"rclone copy {shlex.quote(local_dir)} {remote} -v", timeout_s=RCLONE_TIMEOUT_S)
     if out:
         print(f"[rclone upload] {out}", flush=True)
 
@@ -141,6 +159,9 @@ async def _extract_async(job_input: dict) -> dict:
     extract_norm = job_input.get("extract_norm", "hist")
     dedupe_threshold = int(job_input.get("dedupe_threshold", 6))
 
+    # Re-run gdrive setup each job so rotated SA keys take effect without worker restart.
+    await asyncio.to_thread(_setup_gdrive)
+
     job_root = f"{WORK_ROOT}/jobs/{uuid.uuid4().hex}"
     in_dir = f"{job_root}/in"
     faces_dir = f"{job_root}/faces"
@@ -169,7 +190,7 @@ async def _extract_async(job_input: dict) -> dict:
             f"-D {shlex.quote(detector)} -A {shlex.quote(aligner)} "
             f"-z {int(extract_size)} -O {shlex.quote(extract_norm)}"
         )
-        await _run(extract_cmd, stream=True)
+        await _run(extract_cmd, stream=True, timeout_s=EXTRACT_TIMEOUT_S)
 
         def _png_count(d: str) -> int:
             return len([f for f in os.listdir(d) if f.lower().endswith(".png")])
@@ -178,8 +199,13 @@ async def _extract_async(job_input: dict) -> dict:
             _stage(f"3/4 dedupe (thresh={int(dedupe_threshold)})")
             deduped = f"{job_root}/faces_deduped"
             await _run(
-                f"SRC={shlex.quote(faces_dir)} OUT={shlex.quote(deduped)} "
-                f"THRESH={int(dedupe_threshold)} python {shlex.quote(DEDUPE_REMOTE)}"
+                f"python {shlex.quote(DEDUPE_REMOTE)}",
+                extra_env={
+                    "SRC": faces_dir,
+                    "OUT": deduped,
+                    "THRESH": str(int(dedupe_threshold)),
+                },
+                timeout_s=RCLONE_TIMEOUT_S,
             )
             faces_dir = deduped
 
@@ -209,7 +235,7 @@ def _serve() -> None:
     """Start the RunPod worker loop (blocks waiting for jobs)."""
     import runpod
 
-    _setup_gdrive()
+    _setup_gdrive()  # warm path: configure once at startup; also redone per-job
     runpod.serverless.start({"handler": handler})
 
 

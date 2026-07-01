@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 import typing as T
 from time import sleep
 
@@ -396,11 +397,11 @@ class Loader:  # pylint:disable=too-many-instance-attributes
     def count(self) -> int:
         """The number of frames to be processed"""
         # Wait until skip list has been processed before allowing another thread to call the count
-        while True:
-            if self._ready:
-                break
+        deadline = time.monotonic() + 30
+        while not self._ready:
+            if time.monotonic() > deadline:
+                raise TimeoutError("Loader timed out waiting for skip list to be ready")
             sleep(0.25)
-            continue
         return self._images.process_count
 
     @property
