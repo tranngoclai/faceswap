@@ -14,7 +14,7 @@ fs_workspace_name: "alice-bob-001"
 
 # Google Drive root (configured by faceswap_cloudsync role).
 gdrive_remote_name: "gdrive"
-gdrive_root_folder_id: ""                         # REQUIRED: shared folder ID set by operator
+gdrive_root_folder_id: "{{ vault_gdrive_root_folder_id | default('') }}"  # set via vault.yml
 gdrive_root: "{{ gdrive_remote_name }}:"
 gdrive_workspace: "{{ gdrive_root }}{{ fs_workspace_name }}"
 gdrive_source_a: "{{ gdrive_workspace }}/source/A"
